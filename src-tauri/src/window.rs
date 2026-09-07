@@ -33,6 +33,7 @@ pub fn get_work_area(app: AppHandle) -> Result<WorkArea, String> {
 /// expressed back in logical pixels. The OS places windows on physical pixels,
 /// so a fractional physical edge gets rounded by the compositor and the notch
 /// floats a hairline off the screen edge (the macOS 0.7pt flush-gap bug).
+#[allow(dead_code)] // No Rust call-site yet: the live path rounds in TS (notchGeometry.ts). Kept as the tested reference implementation; a Rust call-site lands with runtime re-anchor work.
 pub fn round_to_physical(logical: f64, scale_factor: f64) -> f64 {
     (logical * scale_factor).round() / scale_factor
 }
