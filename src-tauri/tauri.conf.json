@@ -12,9 +12,20 @@
   "app": {
     "windows": [
       {
-        "title": "codenotch-win",
-        "width": 800,
-        "height": 600
+        "label": "notch",
+        "title": "Codenotch",
+        "url": "index.html",
+        "width": 70,
+        "height": 301,
+        "center": false,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "visible": true,
+        "shadow": false
       }
     ],
     "security": {
