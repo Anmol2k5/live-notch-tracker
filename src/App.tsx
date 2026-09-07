@@ -1,51 +1,35 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow, LogicalPosition, LogicalSize } from '@tauri-apps/api/window';
+import { NotchRootView } from './components/NotchRootView';
+import { anchorNotch, BODY_DEPTH_PT, panelHeightForCells, type WorkArea } from './geometry/notchGeometry';
+import { fixtures } from './state/fixtures';
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+export default function App() {
+  const [rect, setRect] = useState({ x: 0, y: 0, width: BODY_DEPTH_PT, height: panelHeightForCells(3) });
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  useEffect(() => {
+    let cancelled = false;
+    async function place(): Promise<void> {
+      const work = await invoke<WorkArea>('get_work_area');
+      if (cancelled) {
+        return;
+      }
+      const next = anchorNotch(work, fixtures.length);
+      setRect(next);
+      const win = getCurrentWindow();
+      await win.setSize(new LogicalSize(next.width, next.height));
+      await win.setPosition(new LogicalPosition(next.x, next.y));
+    }
+    void place();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+    <div style={{ width: rect.width, height: rect.height }}>
+      <NotchRootView cells={fixtures} width={rect.width} height={rect.height} />
+    </div>
   );
 }
-
-export default App;
