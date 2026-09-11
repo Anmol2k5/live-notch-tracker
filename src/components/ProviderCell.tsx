@@ -15,7 +15,7 @@ export function ProviderCell({ initial, percent }: { initial: string; percent: n
             alignItems: 'center',
             justifyContent: 'center',
             color: palette.textPrimary,
-            fontSize: 16,
+            fontSize: typography.providerInitialPt,
             fontWeight: 600,
           }}
         >

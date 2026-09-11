@@ -6,7 +6,7 @@ html, body, #root {
 }
 
 body {
-  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  font-family: "Segoe UI", system-ui, sans-serif;
   color: #ffffff;
   user-select: none;
   cursor: default;

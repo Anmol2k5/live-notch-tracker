@@ -11,15 +11,20 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     async function place(): Promise<void> {
-      const work = await invoke<WorkArea>('get_work_area');
-      if (cancelled) {
-        return;
+      try {
+        const work = await invoke<WorkArea>('get_work_area');
+        if (cancelled) {
+          return;
+        }
+        const next = anchorNotch(work, fixtures.length);
+        setRect(next);
+        const win = getCurrentWindow();
+        await win.setSize(new LogicalSize(next.width, next.height));
+        await win.setPosition(new LogicalPosition(next.x, next.y));
+        await win.show();
+      } catch (err) {
+        console.error('[codenotch] placement failed:', err);
       }
-      const next = anchorNotch(work, fixtures.length);
-      setRect(next);
-      const win = getCurrentWindow();
-      await win.setSize(new LogicalSize(next.width, next.height));
-      await win.setPosition(new LogicalPosition(next.x, next.y));
     }
     void place();
     return () => {
