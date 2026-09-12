@@ -3,9 +3,36 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalPosition, LogicalSize } from '@tauri-apps/api/window';
 import { NotchRootView } from './components/NotchRootView';
 import { anchorNotch, BODY_DEPTH_PT, panelHeightForCells, type WorkArea } from './geometry/notchGeometry';
-import { fixtures } from './state/fixtures';
+import { useUsageStore } from './state/usageStore';
+
+// Format the provider data for the UI
+function toFixtureCells(providers: ReturnType<typeof useUsageStore>['providers']) {
+  return providers.map(({ id, snapshot }) => {
+    // Determine the most restrictive window's percentage
+    let percent = 0;
+    if (snapshot.windows.length > 0) {
+      // Find max usage across all windows
+      const maxUsed = Math.max(...snapshot.windows.map(w => w.used));
+      percent = Math.round(maxUsed * 100);
+    }
+    
+    // Antigravity (derived count) is handled by looking at count, but UI handles percentages
+    if (snapshot.windows.length === 1 && snapshot.windows[0].derived) {
+      percent = snapshot.windows[0].count ?? 0;
+    }
+
+    return {
+      id,
+      initial: id.charAt(0).toUpperCase(),
+      percent,
+      status: snapshot.status
+    };
+  });
+}
 
 export default function App() {
+  const { providers } = useUsageStore();
+  const cells = toFixtureCells(providers);
   const [rect, setRect] = useState({ x: 0, y: 0, width: BODY_DEPTH_PT, height: panelHeightForCells(3) });
 
   useEffect(() => {
@@ -13,10 +40,12 @@ export default function App() {
     async function place(): Promise<void> {
       try {
         const work = await invoke<WorkArea>('get_work_area');
-        if (cancelled) {
-          return;
-        }
-        const next = anchorNotch(work, fixtures.length);
+        if (cancelled) return;
+        
+        // We anchor based on the number of active cells (minimum 1 so the notch doesn't vanish completely)
+        const cellCount = Math.max(1, cells.length);
+        const next = anchorNotch(work, cellCount);
+        
         setRect(next);
         const win = getCurrentWindow();
         await win.setSize(new LogicalSize(next.width, next.height));
@@ -30,11 +59,11 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [cells.length]);
 
   return (
     <div style={{ width: rect.width, height: rect.height }}>
-      <NotchRootView cells={fixtures} width={rect.width} height={rect.height} />
+      <NotchRootView cells={cells} width={rect.width} height={rect.height} />
     </div>
   );
 }

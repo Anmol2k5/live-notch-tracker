@@ -1,8 +1,15 @@
-import type { FixtureCell } from '../state/fixtures';
 import { ProviderCell } from './ProviderCell';
 import { SideNotchShape } from './SideNotchShape';
+import { ProviderStatus } from '../model/providerTypes';
 
-export function NotchRootView({ cells, width, height }: { cells: FixtureCell[]; width: number; height: number }) {
+export interface UIProviderCell {
+  id: string;
+  initial: string;
+  percent: number;
+  status: ProviderStatus;
+}
+
+export function NotchRootView({ cells, width, height }: { cells: UIProviderCell[]; width: number; height: number }) {
   return (
     <div style={{ position: 'relative', width, height }}>
       <div style={{ position: 'absolute', inset: 0 }}>
@@ -19,7 +26,7 @@ export function NotchRootView({ cells, width, height }: { cells: FixtureCell[]; 
         }}
       >
         {cells.map((cell) => (
-          <ProviderCell key={cell.id} initial={cell.initial} percent={cell.percent} />
+          <ProviderCell key={cell.id} initial={cell.initial} percent={cell.percent} status={cell.status} />
         ))}
       </div>
     </div>
