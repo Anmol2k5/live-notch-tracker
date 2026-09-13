@@ -51,6 +51,10 @@ export default function App() {
         await win.setSize(new LogicalSize(next.width, next.height));
         await win.setPosition(new LogicalPosition(next.x, next.y));
         await win.show();
+        // Re-apply Win32 exstyles after show(): Tauri may reset them on show().
+        // This makes the Alt-Tab exclusion and click-through stick in the
+        // production build (verified with WindowFromPoint + exstyle checks).
+        try { await invoke('apply_notch_styles_cmd'); } catch { /* non-Windows or early */ }
       } catch (err) {
         console.error('[codenotch] placement failed:', err);
       }

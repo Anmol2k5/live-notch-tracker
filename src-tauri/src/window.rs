@@ -31,38 +31,71 @@ pub fn get_work_area(app: AppHandle) -> Result<WorkArea, String> {
 
 /// Apply Win32 extended styles to the notch window at launch:
 /// - `WS_EX_TOOLWINDOW`: hides the window from the Alt-Tab switcher
-/// - `WS_EX_TRANSPARENT`: makes the window click-through (clicks in
-///   transparent margins pass to whatever is behind)
+/// - `WS_EX_TRANSPARENT | WS_EX_LAYERED`: makes the window click-through
+///   (clicks in transparent margins pass to whatever is behind). `WS_EX_LAYERED`
+///   is required alongside `WS_EX_TRANSPARENT` on Windows — `TRANSPARENT` alone
+///   does not make `WindowFromPoint` skip the window (verified with a live
+///   production build; `TRANSPARENT` alone left margin hits on the WebView,
+///   `TRANSPARENT|LAYERED` makes them hit the window behind).
 ///
-/// Called from the Tauri `setup` hook in `lib.rs`.
+/// Called from the Tauri `setup` hook in `lib.rs` and again after the window
+/// is shown (Tauri may reset exstyle on `show()`).
 #[cfg(windows)]
 pub fn apply_notch_styles(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    apply_notch_styles_inner(app.get_webview_window("notch"))
+}
+
+#[cfg(windows)]
+fn apply_notch_styles_inner(
+    window: Option<tauri::WebviewWindow>,
+) -> Result<(), Box<dyn std::error::Error>> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SET_WINDOW_POS_FLAGS,
+        SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED,
+        WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
     };
 
-    let window = app
-        .get_webview_window("notch")
-        .ok_or("notch window not found during setup")?;
-
+    let window = window.ok_or("notch window not found during setup")?;
     let handle = window.window_handle()?.as_raw();
     if let RawWindowHandle::Win32(win32) = handle {
         let hwnd = HWND(win32.hwnd.get() as *mut _);
         unsafe {
             let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-            let new_style =
-                style | (WS_EX_TOOLWINDOW.0 as isize) | (WS_EX_TRANSPARENT.0 as isize);
+            let new_style = style
+                | (WS_EX_TOOLWINDOW.0 as isize)
+                | (WS_EX_TRANSPARENT.0 as isize)
+                | (WS_EX_LAYERED.0 as isize);
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_style);
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SET_WINDOW_POS_FLAGS(SWP_NOMOVE.0 | SWP_NOSIZE.0 | SWP_NOZORDER.0 | SWP_FRAMECHANGED.0),
+            );
         }
     }
-
     Ok(())
+}
+
+#[cfg(windows)]
+#[tauri::command]
+pub fn apply_notch_styles_cmd(app: tauri::AppHandle) -> Result<(), String> {
+    apply_notch_styles_inner(app.get_webview_window("notch")).map_err(|e| e.to_string())
 }
 
 #[cfg(not(windows))]
 pub fn apply_notch_styles(_app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn apply_notch_styles_cmd(_app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 

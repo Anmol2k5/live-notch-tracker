@@ -421,39 +421,53 @@ fn direct_quota(token: &str) -> Option<Vec<LimitWindow>> {
 
 // ---------------- 4. Fallback count ----------------
 
+/// Pure parsing/counting of transcript JSONL text — extracted for testing.
+/// Returns (today_count, latest_ms) where latest is the newest timestamp of any MODEL line.
+/// `today` is the Local date to compare against (UTC timestamps are converted to Local).
+pub(crate) fn count_requests_in_text(text: &str, today: chrono::NaiveDate) -> (u64, Option<u64>) {
+    use chrono::{Datelike, Local, TimeZone};
+    let mut count = 0u64;
+    let mut latest: Option<u64> = None;
+    for line in text.lines() {
+        if !line.contains("\"MODEL\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if v.get("source").and_then(|x| x.as_str()) != Some("MODEL") {
+            continue;
+        }
+        let Some(ts) = v.get("created_at").and_then(|x| x.as_str()) else { continue };
+        let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) else { continue };
+        let ms = dt.timestamp_millis().max(0) as u64;
+        latest = Some(latest.map_or(ms, |l| l.max(ms)));
+        if let Some(local) = Local.timestamp_millis_opt(ms as i64).single() {
+            if local.date_naive() == today {
+                count += 1;
+            }
+        }
+        let _ = today.year();
+    }
+    (count, latest)
+}
+
 /// Today's MODEL steps (UTC timestamps compared by local day)
 pub fn requests_today() -> (u64, Option<u64>) {
-    use chrono::{Datelike, Local, TimeZone};
+    use chrono::Local;
     let Some(root) = state_root().map(|r| r.join("brain")) else { return (0, None) };
     let Ok(rd) = std::fs::read_dir(&root) else { return (0, None) };
     let today = Local::now().date_naive();
-    let mut count = 0u64;
+    let mut total = 0u64;
     let mut latest: Option<u64> = None;
     for e in rd.flatten() {
         let p = e.path().join(".system_generated").join("logs").join("transcript.jsonl");
         let Ok(text) = std::fs::read_to_string(&p) else { continue };
-        for line in text.lines() {
-            if !line.contains("\"MODEL\"") {
-                continue;
-            }
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-            if v.get("source").and_then(|x| x.as_str()) != Some("MODEL") {
-                continue;
-            }
-            let Some(ts) = v.get("created_at").and_then(|x| x.as_str()) else { continue };
-            let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) else { continue };
-            let ms = dt.timestamp_millis().max(0) as u64;
-            latest = Some(latest.map_or(ms, |l| l.max(ms)));
-            let local = Local.timestamp_millis_opt(ms as i64).single();
-            if let Some(l) = local {
-                if l.date_naive() == today {
-                    count += 1;
-                }
-            }
-            let _ = today.year(); // keeps the Datelike import in use
+        let (c, l) = count_requests_in_text(&text, today);
+        total += c;
+        if let Some(ms) = l {
+            latest = Some(latest.map_or(ms, |prev| prev.max(ms)));
         }
     }
-    (count, latest)
+    (total, latest)
 }
 
 // ---------------- Putting it together ----------------
@@ -621,4 +635,274 @@ pub fn probe() -> String {
             None => "not running".into(),
         }
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ---- windows_from_bridge: remainingFraction → used% conversion ----
+
+    #[test]
+    fn bridge_normal_remaining_to_used() {
+        let v = json!({
+            "response": {
+                "groups": [
+                    {
+                        "displayName": "Gemini",
+                        "buckets": [
+                            { "bucketId": "weekly", "displayName": "Weekly Limit Remaining", "remainingFraction": 0.75, "resetTime": "2026-09-20T00:00:00Z" },
+                            { "bucketId": "daily", "displayName": "Daily Limit Remaining", "remainingFraction": 0.20, "resetTime": "2026-09-13T00:00:00Z" }
+                        ]
+                    }
+                ]
+            }
+        });
+        let w = windows_from_bridge(&v);
+        assert_eq!(w.len(), 2);
+        // used = 1 - remaining
+        assert!((w[0].used - 0.25).abs() < 1e-9, "remaining 0.75 -> used 0.25");
+        assert!((w[1].used - 0.80).abs() < 1e-9, "remaining 0.20 -> used 0.80");
+        assert_eq!(w[0].id, "weekly");
+        assert_eq!(w[0].label, "Gemini"); // group displayName wins
+        assert!(w[0].resets_at.is_some());
+    }
+
+    #[test]
+    fn bridge_remaining_out_of_range_skipped() {
+        let v = json!({
+            "response": {
+                "groups": [
+                    {
+                        "displayName": "Gemini",
+                        "buckets": [
+                            { "bucketId": "bad_high", "remainingFraction": 1.5, "resetTime": "2026-09-20T00:00:00Z" },
+                            { "bucketId": "bad_low", "remainingFraction": -0.1, "resetTime": "2026-09-20T00:00:00Z" },
+                            { "bucketId": "ok", "remainingFraction": 0.5, "resetTime": "2026-09-20T00:00:00Z" }
+                        ]
+                    }
+                ]
+            }
+        });
+        let w = windows_from_bridge(&v);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].id, "ok");
+        assert!((w[0].used - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn bridge_missing_fields_no_panic() {
+        let v = json!({});
+        assert!(windows_from_bridge(&v).is_empty());
+        let v2 = json!({ "response": {} });
+        assert!(windows_from_bridge(&v2).is_empty());
+        let v3 = json!({ "response": { "groups": "not-an-array" } });
+        assert!(windows_from_bridge(&v3).is_empty());
+        let v4 = json!({
+            "response": { "groups": [{ "displayName": "G", "buckets": [{ "remainingFraction": 0.5 }] }] }
+        });
+        let w = windows_from_bridge(&v4);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].resets_at.is_none());
+    }
+
+    #[test]
+    fn bridge_clamps_used_and_handles_zero_one() {
+        let v = json!({
+            "response": {
+                "groups": [
+                    {
+                        "displayName": "X",
+                        "buckets": [
+                            { "bucketId": "full", "remainingFraction": 0.0, "resetTime": "2026-09-13T00:00:00Z" },
+                            { "bucketId": "empty", "remainingFraction": 1.0, "resetTime": "2026-09-13T00:00:00Z" }
+                        ]
+                    }
+                ]
+            }
+        });
+        let w = windows_from_bridge(&v);
+        assert!((w[0].used - 1.0).abs() < 1e-9);
+        assert!((w[1].used - 0.0).abs() < 1e-9);
+    }
+
+    // ---- Credential Manager JSON value parser (plain + base64) ----
+
+    #[test]
+    fn credential_plain_valid() {
+        let raw = br#"{"auth_method":"consumer","token":{"access_token":"ya29.testtoken123","expiry":"2099-09-13T12:00:00+02:00"}}"#;
+        let c = decode_credential(raw).expect("should parse plain JSON");
+        assert_eq!(c.access_token, "ya29.testtoken123");
+        assert_eq!(c.auth_method, "consumer");
+        assert!(!c.expired, "far-future expiry should not be expired");
+    }
+
+    #[test]
+    fn credential_plain_expired() {
+        let raw = br#"{"auth_method":"api_key","token":{"access_token":"tok","expiry":"2000-01-01T00:00:00Z"}}"#;
+        let c = decode_credential(raw).expect("should parse");
+        assert!(c.expired);
+        assert_eq!(c.auth_method, "api_key");
+    }
+
+    #[test]
+    fn credential_base64_prefixed() {
+        let json = r#"{"auth_method":"consumer","token":{"access_token":"base64token","expiry":"2099-01-01T00:00:00Z"}}"#;
+        let b64 = {
+            let bytes = json.as_bytes();
+            // Use our own b64_decode's counterpart: encode via simple base64 for test
+            let mut out = String::new();
+            const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let mut buf: u32 = 0;
+            let mut bits: u8 = 0;
+            let mut count = 0;
+            for &b in bytes {
+                buf = (buf << 8) | b as u32;
+                bits += 8;
+                while bits >= 6 {
+                    bits -= 6;
+                    out.push(TABLE[((buf >> bits) & 0x3F) as usize] as char);
+                    count += 1;
+                }
+            }
+            if bits > 0 {
+                out.push(TABLE[((buf << (6 - bits)) & 0x3F) as usize] as char);
+                count += 1;
+            }
+            while count % 4 != 0 {
+                out.push('=');
+                count += 1;
+            }
+            out
+        };
+        let prefixed = format!("go-keyring-base64:{b64}");
+        let c = decode_credential(prefixed.as_bytes()).expect("should parse base64 prefixed");
+        assert_eq!(c.access_token, "base64token");
+        assert_eq!(c.auth_method, "consumer");
+    }
+
+    #[test]
+    fn credential_invalid_returns_none() {
+        assert!(decode_credential(b"not json").is_none());
+        assert!(decode_credential(b"{}").is_none());
+        assert!(decode_credential(b"").is_none());
+        // missing access_token
+        assert!(decode_credential(br#"{"auth_method":"x","token":{"expiry":"2099-01-01T00:00:00Z"}}"#).is_none());
+    }
+
+    #[test]
+    fn b64_decode_tolerates_url_safe_and_missing_padding() {
+        // "Hello" -> "SGVsbG8=" ; without padding "SGVsbG8" and url-safe variant
+        let decoded = b64_decode("SGVsbG8").expect("missing padding should still decode");
+        assert_eq!(decoded, b"Hello");
+        let decoded2 = b64_decode("SGVsbG8=").expect("with padding");
+        assert_eq!(decoded2, b"Hello");
+        // url-safe: '+' -> '-', '/' -> '_' — our decoder accepts both
+        let hello_url = b64_decode("SGVs-b8=").or_else(|| b64_decode("SGVs/b8="));
+        assert!(hello_url.is_some());
+        assert!(b64_decode("!!!invalid!!!").is_none());
+    }
+
+    #[test]
+    fn b64_decode_empty() {
+        assert_eq!(b64_decode("").unwrap(), b"");
+    }
+
+    // ---- transcript JSONL line-counting logic ----
+
+    fn today() -> chrono::NaiveDate {
+        use chrono::Local;
+        Local::now().date_naive()
+    }
+
+    #[test]
+    fn transcript_counts_model_today() {
+        use chrono::{Local, Duration};
+        let today = today();
+        let now = Local::now();
+        let today_iso = now.to_rfc3339();
+        let yesterday_iso = (now - Duration::days(1)).to_rfc3339();
+        let text = format!(
+            "{}\n{}\n{}\n{}\n",
+            // today MODEL counted
+            serde_json::json!({"source":"MODEL","created_at": today_iso}).to_string(),
+            // yesterday MODEL not counted (but contributes to latest)
+            serde_json::json!({"source":"MODEL","created_at": yesterday_iso}).to_string(),
+            // non-MODEL ignored
+            serde_json::json!({"source":"USER","created_at": today_iso}).to_string(),
+            // malformed line ignored
+            "not json at all"
+        );
+        let (count, latest) = count_requests_in_text(&text, today);
+        assert_eq!(count, 1, "only today's MODEL should be counted");
+        assert!(latest.is_some());
+    }
+
+    #[test]
+    fn transcript_counts_multiple_today() {
+        use chrono::Local;
+        let today = today();
+        let iso = Local::now().to_rfc3339();
+        let line = serde_json::json!({"source":"MODEL","created_at": iso}).to_string();
+        let text = format!("{line}\n{line}\n{line}\n");
+        let (count, latest) = count_requests_in_text(&text, today);
+        assert_eq!(count, 3);
+        assert!(latest.is_some());
+    }
+
+    #[test]
+    fn transcript_empty_yields_zero() {
+        let today = today();
+        let (count, latest) = count_requests_in_text("", today);
+        assert_eq!(count, 0);
+        assert!(latest.is_none());
+    }
+
+    #[test]
+    fn transcript_malformed_lines_ignored() {
+        use chrono::Local;
+        let today = today();
+        let iso = Local::now().to_rfc3339();
+        let text = format!(
+            "{}\n{}\n{}\n",
+            r#"{"source":"MODEL","created_at":"not-a-date"}"#,
+            r#"{"source":"MODEL"}"#, // missing created_at
+            serde_json::json!({"source":"MODEL","created_at": iso}).to_string()
+        );
+        let (count, latest) = count_requests_in_text(&text, today);
+        assert_eq!(count, 1);
+        assert!(latest.is_some());
+    }
+
+    #[test]
+    fn transcript_latest_is_max() {
+        use chrono::{Local, Duration};
+        let today = today();
+        let now = Local::now();
+        let iso_old = (now - Duration::days(2)).to_rfc3339();
+        let iso_new = now.to_rfc3339();
+        let text = format!(
+            "{}\n{}\n",
+            serde_json::json!({"source":"MODEL","created_at": iso_old}).to_string(),
+            serde_json::json!({"source":"MODEL","created_at": iso_new}).to_string()
+        );
+        let (_count, latest) = count_requests_in_text(&text, today);
+        let expected = chrono::DateTime::parse_from_rfc3339(&iso_new).unwrap().timestamp_millis().max(0) as u64;
+        assert_eq!(latest, Some(expected));
+    }
+
+    #[test]
+    fn transcript_no_model_yields_none_latest() {
+        use chrono::Local;
+        let today = today();
+        let iso = Local::now().to_rfc3339();
+        let text = format!(
+            "{}\n",
+            serde_json::json!({"source":"USER","created_at": iso}).to_string()
+        );
+        let (count, latest) = count_requests_in_text(&text, today);
+        assert_eq!(count, 0);
+        assert!(latest.is_none());
+    }
 }
