@@ -98,6 +98,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             window::get_work_area,
             window::apply_notch_styles_cmd,
+            window::apply_notch_region_cmd,
             get_usage,
             get_cursor,
             get_codex,
