@@ -25,8 +25,8 @@ export function NotchRootView({ cells, width, height }: { cells: UIProviderCell[
           justifyContent: 'space-evenly',
         }}
       >
-        {cells.map((cell) => (
-          <ProviderCell key={cell.id} initial={cell.initial} percent={cell.percent} status={cell.status} />
+        {cells.map((cell, index) => (
+          <ProviderCell key={cell.id} index={index} initial={cell.initial} percent={cell.percent} status={cell.status} />
         ))}
       </div>
     </div>
