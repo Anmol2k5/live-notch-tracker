@@ -94,25 +94,36 @@ fn persist(s: &UsageSnapshot) {
     }
 }
 
+fn parse_credentials_value(v: &serde_json::Value, now: u64) -> Option<(String, bool)> {
+    let oauth = v.get("claudeAiOauth").unwrap_or(v);
+    let tok = oauth.get("accessToken").and_then(|x| x.as_str())?;
+    if tok.is_empty() {
+        return None;
+    }
+    let expired = oauth
+        .get("expiresAt")
+        .and_then(|x| x.as_f64())
+        .map(|ms| (ms as u64) <= now)
+        .unwrap_or(false);
+    Some((tok.to_string(), expired))
+}
+
+fn credentials_from_text(text: &str, now: u64) -> Option<(String, bool)> {
+    let v = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    parse_credentials_value(&v, now)
+}
+
 /// Reads Claude Code's OAuth credential. Returns (token, expired hint).
 fn read_credentials() -> Option<(String, bool)> {
     let home = dirs::home_dir()?;
+    let now = now_ms();
     for name in [".credentials.json", "credentials.json"] {
         let p = home.join(".claude").join(name);
         let Ok(text) = std::fs::read_to_string(&p) else {
             continue;
         };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-            continue;
-        };
-        let oauth = v.get("claudeAiOauth").unwrap_or(&v);
-        if let Some(tok) = oauth.get("accessToken").and_then(|x| x.as_str()) {
-            let expired = oauth
-                .get("expiresAt")
-                .and_then(|x| x.as_f64())
-                .map(|ms| (ms as u64) <= now_ms())
-                .unwrap_or(false);
-            return Some((tok.to_string(), expired));
+        if let Some(creds) = credentials_from_text(&text, now) {
+            return Some(creds);
         }
     }
     None
@@ -342,4 +353,219 @@ pub fn start(app: AppHandle) {
             });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ---- parse_response: normal successful response ----
+
+    #[test]
+    fn normal_limits_response() {
+        let v = json!({
+            "limits": [
+                { "kind": "session", "percent": 42.5, "resets_at": "2026-09-13T12:00:00Z" },
+                { "kind": "seven_day", "percent": 10.0, "resets_at": "2026-09-20T00:00:00Z" }
+            ]
+        });
+        let w = parse_response(&v);
+        assert_eq!(w.len(), 2);
+        // session sorts first
+        assert_eq!(w[0].id, "session");
+        assert!((w[0].used - 0.425).abs() < 1e-9);
+        assert_eq!(w[0].label, "Current session");
+        assert!(w[0].resets_at.is_some());
+        assert_eq!(w[1].id, "seven_day");
+        assert!((w[1].used - 0.10).abs() < 1e-9);
+    }
+
+    #[test]
+    fn normal_limits_with_fallback_dedup() {
+        // limits has weekly_all at 25%; seven_day fallback at same percent+time must not duplicate
+        let v = json!({
+            "limits": [
+                { "kind": "weekly_all", "percent": 25.0, "resets_at": "2026-09-20T00:00:00Z" }
+            ],
+            "seven_day": { "utilization": 25.0, "resets_at": "2026-09-20T00:00:00Z" },
+            "five_hour": { "utilization": 73.0, "resets_at": "2026-09-13T15:00:00Z" }
+        });
+        let w = parse_response(&v);
+        // weekly_all from limits, five_hour from fallback, seven_day fallback deduped
+        assert_eq!(w.len(), 2);
+        let ids: Vec<&str> = w.iter().map(|x| x.id.as_str()).collect();
+        assert!(ids.contains(&"weekly_all"));
+        assert!(ids.contains(&"session")); // five_hour maps to session id
+        // seven_day should not appear as duplicate
+        assert!(!ids.contains(&"seven_day"));
+    }
+
+    #[test]
+    fn fallback_only_when_limits_empty() {
+        let v = json!({
+            "five_hour": { "utilization": 50.0, "resets_at": "2026-09-13T15:00:00Z" },
+            "seven_day": { "utilization": 20.0, "resets_at": "2026-09-20T00:00:00Z" }
+        });
+        let w = parse_response(&v);
+        assert_eq!(w.len(), 2);
+        assert_eq!(w[0].id, "session");
+        assert!((w[0].used - 0.5).abs() < 1e-9);
+        assert_eq!(w[1].id, "seven_day");
+    }
+
+    #[test]
+    fn limits_missing_reset_is_skipped() {
+        let v = json!({
+            "limits": [
+                { "kind": "session", "percent": 42.0, "resets_at": "not-a-date" },
+                { "kind": "session", "percent": 42.0, "resets_at": "2026-09-13T12:00:00Z" }
+            ]
+        });
+        let w = parse_response(&v);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].id, "session");
+    }
+
+    // ---- backoff_secs: 429 handling including Retry-After ----
+
+    #[test]
+    fn backoff_base_and_exponential() {
+        assert_eq!(backoff_secs(0, 0), 60);
+        assert_eq!(backoff_secs(1, 0), 120);
+        assert_eq!(backoff_secs(2, 0), 240);
+        assert_eq!(backoff_secs(3, 0), 480);
+        assert_eq!(backoff_secs(4, 0), 900); // 960 capped to 900
+        assert_eq!(backoff_secs(10, 0), 900); // capped even beyond 4
+    }
+
+    #[test]
+    fn backoff_honors_retry_after_floor() {
+        // Retry-After raises the wait, never lowers it
+        assert_eq!(backoff_secs(0, 120), 120);
+        assert_eq!(backoff_secs(0, 30), 60); // floor 60 still wins when Retry-After is small
+        assert_eq!(backoff_secs(1, 300), 300); // exp 120 < 300 so 300 wins
+        assert_eq!(backoff_secs(4, 1000), 1000); // Retry-After can exceed cap
+        assert_eq!(backoff_secs(4, 0), 900);
+    }
+
+    #[test]
+    fn backoff_retry_after_string_parse_simulation() {
+        // Simulate fetch Once behaviour: header missing -> 0, valid -> parsed value
+        let ra_missing: u64 = "".parse::<u64>().unwrap_or(0);
+        assert_eq!(backoff_secs(0, ra_missing), 60);
+        let ra_valid: u64 = "180".parse::<u64>().unwrap_or(0);
+        assert_eq!(backoff_secs(0, ra_valid), 180);
+        let ra_invalid: u64 = "not-a-number".parse::<u64>().unwrap_or(0);
+        assert_eq!(backoff_secs(0, ra_invalid), 60);
+    }
+
+    // ---- malformed / partial JSON degrades gracefully ----
+
+    #[test]
+    fn malformed_empty_object_yields_no_windows() {
+        let v = json!({});
+        let w = parse_response(&v);
+        assert!(w.is_empty(), "empty object should not panic and should yield no windows");
+    }
+
+    #[test]
+    fn malformed_limits_not_array() {
+        let v = json!({ "limits": "not-an-array" });
+        let w = parse_response(&v);
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn malformed_partial_limits_missing_fields() {
+        let v = json!({
+            "limits": [
+                { "kind": "session" }, // missing percent
+                { "percent": 50.0 },   // missing kind
+                { "kind": "session", "percent": "not-a-number", "resets_at": "2026-09-13T12:00:00Z" },
+                { "kind": "session", "percent": 50.0, "resets_at": "2026-09-13T12:00:00Z" } // only valid one
+            ]
+        });
+        let w = parse_response(&v);
+        assert_eq!(w.len(), 1);
+        assert!((w[0].used - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn malformed_percent_clamped() {
+        let v = json!({
+            "limits": [
+                { "kind": "session", "percent": 150.0, "resets_at": "2026-09-13T12:00:00Z" },
+                { "kind": "seven_day", "percent": -10.0, "resets_at": "2026-09-13T12:00:00Z" }
+            ]
+        });
+        let w = parse_response(&v);
+        assert_eq!(w.len(), 2);
+        assert!((w[0].used - 1.0).abs() < 1e-9);
+        assert!((w[1].used - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn malformed_json_does_not_panic_on_invalid_reset() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"limits":[{"kind":"session","percent":42.5,"resets_at":null}]}"#).unwrap();
+        let w = std::panic::catch_unwind(|| parse_response(&v));
+        assert!(w.is_ok());
+        assert!(w.unwrap().is_empty());
+    }
+
+    // ---- missing / invalid credentials file ----
+
+    #[test]
+    fn credentials_missing_file_returns_none() {
+        let result = credentials_from_text("", 0);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn credentials_invalid_json_returns_none() {
+        assert!(credentials_from_text("not json at all", 0).is_none());
+        assert!(credentials_from_text(r#"{"claudeAiOauth": "not an object"}"#, 0).is_none());
+    }
+
+    #[test]
+    fn credentials_missing_access_token_returns_none() {
+        let j = r#"{"claudeAiOauth":{"expiresAt": 9999999999999}}"#;
+        assert!(credentials_from_text(j, 0).is_none());
+        let j2 = r#"{"otherKey": 123}"#;
+        assert!(credentials_from_text(j2, 0).is_none());
+    }
+
+    #[test]
+    fn credentials_valid_token_future_expiry() {
+        let now: u64 = 1_700_000_000_000;
+        let future = now + 3600_000;
+        let j = format!(r#"{{"claudeAiOauth":{{"accessToken":"tok123","expiresAt":{future}}}}}"#);
+        let res = credentials_from_text(&j, now).unwrap();
+        assert_eq!(res.0, "tok123");
+        assert!(!res.1, "future expiry should be not-expired");
+    }
+
+    #[test]
+    fn credentials_expired_token() {
+        let now: u64 = 1_700_000_000_000;
+        let past = now - 1000;
+        let j = format!(r#"{{"claudeAiOauth":{{"accessToken":"tok123","expiresAt":{past}}}}}"#);
+        let res = credentials_from_text(&j, now).unwrap();
+        assert!(res.1, "past expiry should be marked expired");
+    }
+
+    #[test]
+    fn credentials_top_level_token_no_wrapper() {
+        // Credentials file may store accessToken at top level (oauth field missing)
+        let now: u64 = 1_700_000_000_000;
+        let j = r#"{"accessToken":"top-level-token","expiresAt": 9999999999999}"#;
+        let res = credentials_from_text(j, now).unwrap();
+        assert_eq!(res.0, "top-level-token");
+    }
+
+    #[test]
+    fn credentials_empty_token_is_invalid() {
+        let j = r#"{"claudeAiOauth":{"accessToken":"","expiresAt": 9999999999999}}"#;
+        assert!(credentials_from_text(j, 0).is_none());
+    }
 }

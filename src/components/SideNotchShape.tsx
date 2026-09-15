@@ -1,3 +1,5 @@
+import { palette } from '../design/palette';
+
 export interface NotchProfile {
   edgeX: number;
   top: [number, number];
@@ -27,9 +29,16 @@ export function notchPath(width: number, height: number): NotchProfile {
 
 export function SideNotchShape({ width, height }: { width: number; height: number }) {
   const { d } = notchPath(width, height);
+  const gradId = 'notch-depth-grad';
   return (
     <svg width={width} height={height} style={{ display: 'block' }}>
-      <path d={d} fill="#000000" />
+      <defs>
+        <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stopColor={palette.notchHighlight} />
+          <stop offset="100%" stopColor={palette.notch} />
+        </linearGradient>
+      </defs>
+      <path d={d} fill={`url(#${gradId})`} />
     </svg>
   );
 }

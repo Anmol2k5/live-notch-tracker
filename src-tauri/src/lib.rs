@@ -19,9 +19,36 @@ pub fn data_dir() -> PathBuf {
     dirs::config_dir().unwrap_or_else(|| PathBuf::from("")).join("codenotch-win")
 }
 
+/// Whether Claude Code appears to be running on this machine.
+/// Used to pick the poll cadence in `usage.rs`: 60 s while active, 300 s otherwise.
+/// On Windows this checks for a `Win32_Process` whose name contains "claude"
+/// (covers `claude.exe`, `claude-code`, etc.), mirroring the `Get-CimInstance`
+/// approach already used in `antigravity.rs` for `language_server` discovery.
 pub fn is_claude_running() -> bool {
-    // A simplified active check, returning true so it polls every 60s
-    true
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let out = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-CimInstance Win32_Process -Filter \"Name LIKE '%claude%'\" | ForEach-Object { $_.ProcessId }",
+            ])
+            .creation_flags(0x0800_0000)
+            .output();
+        match out {
+            Ok(o) => {
+                let s = String::from_utf8_lossy(&o.stdout);
+                s.lines().any(|l| l.trim().parse::<u32>().is_ok())
+            }
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 #[tauri::command]
@@ -70,6 +97,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             window::get_work_area,
+            window::apply_notch_styles_cmd,
+            window::apply_notch_region_cmd,
             get_usage,
             get_cursor,
             get_codex,
@@ -78,6 +107,20 @@ pub fn run() {
         ])
         .setup(|app| {
             window::apply_notch_styles(app)?;
+            // Tauri may reset exstyle on show(); re-apply shortly after the
+            // frontend's `win.show()` (the frontend also invokes
+            // `apply_notch_styles_cmd` after `show()`, this is a safety net
+            // for the production build where the console is not visible).
+            #[cfg(windows)]
+            {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(600));
+                    let _ = window::apply_notch_styles_cmd(h.clone());
+                    std::thread::sleep(std::time::Duration::from_millis(900));
+                    let _ = window::apply_notch_styles_cmd(h);
+                });
+            }
             
             let handle = app.handle().clone();
             usage::start(handle.clone());
