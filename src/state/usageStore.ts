@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { RawUsageSnapshot, UsageSnapshot, parseUsageSnapshot } from '../model/providerTypes';
+import { RawUsageSnapshot, UsageSnapshot, parseUsageSnapshot, ProviderId } from '../model/providerTypes';
 
 export function useUsageStore() {
   const [claude, setClaude] = useState<UsageSnapshot | null>(null);
@@ -43,7 +43,7 @@ export function useUsageStore() {
   };
 
   // Filter out absent or none providers so the UI doesn't render them
-  const activeProviders: Array<{ id: string; snapshot: UsageSnapshot }> = [];
+  const activeProviders: Array<{ id: ProviderId; snapshot: UsageSnapshot }> = [];
   
   if (claude && claude.status.kind !== 'absent' && claude.status.kind !== 'none') {
     activeProviders.push({ id: 'claude', snapshot: claude });

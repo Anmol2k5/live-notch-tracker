@@ -5,23 +5,36 @@ import { ProviderStatus } from '../model/providerTypes';
 const R = 20;
 const C = 2 * Math.PI * R;
 
-export function ProviderRing({ fraction, status }: { fraction: number; status: ProviderStatus }) {
-  const clamped = Math.min(1, Math.max(0, fraction));
+export function ProviderRing({
+  fraction,
+  status,
+  accentColor,
+}: {
+  fraction: number | null;
+  status: ProviderStatus;
+  accentColor?: string;
+}) {
+  const hasArc = fraction != null;
+  const clamped = hasArc ? Math.min(1, Math.max(0, fraction)) : 0;
   const band = bandFor(clamped);
   const arcColor = colorFor(band);
   const glow = glowColor[band] ?? 'rgba(255,255,255,0.2)';
 
   // Stale and backoff states dim the ring opacity
   const isStale = status.kind === 'stale' || status.kind === 'backoff';
-  const opacity = isStale ? 0.4 : 1.0;
+  const opacity = isStale ? 0.45 : 1.0;
 
   // Error or needsAuth renders a distinct track with no active arc
   const isError = status.kind === 'error' || status.kind === 'needsAuth';
-  const trackColor = isError ? '#b45335' : palette.ringTrack;
-  const showArc = !isError;
+  const trackColor = isError
+    ? '#991B1B'
+    : accentColor
+    ? `${accentColor}33`
+    : palette.ringTrack;
+  const showArc = !isError && hasArc && clamped > 0;
 
   const filterId = `ring-glow-${band}`;
-  const glowClass = band === 'critical' && !isStale ? 'ring-glow-critical' : '';
+  const glowClass = band === 'critical' && !isStale && showArc ? 'ring-glow-critical' : '';
 
   return (
     <svg width={48} height={48} viewBox="0 0 48 48" style={{ display: 'block', opacity }}>
@@ -38,18 +51,22 @@ export function ProviderRing({ fraction, status }: { fraction: number; status: P
       </defs>
       {/* Track ring */}
       <circle
-        cx={24} cy={24} r={R}
+        cx={24}
+        cy={24}
+        r={R}
         fill="none"
         stroke={trackColor}
         strokeWidth={4}
         strokeLinecap="round"
-        opacity={0.6}
+        opacity={0.65}
       />
       {/* Active arc with glow */}
       {showArc && (
         <circle
           className={`ring-arc ${glowClass}`}
-          cx={24} cy={24} r={R}
+          cx={24}
+          cy={24}
+          r={R}
           fill="none"
           stroke={arcColor}
           strokeWidth={4.5}

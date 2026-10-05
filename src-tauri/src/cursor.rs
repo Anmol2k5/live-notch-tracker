@@ -48,27 +48,12 @@ pub fn store_url() -> Option<PathBuf> {
     dirs::config_dir().map(|c| c.join("Cursor").join("User").join("globalStorage").join("state.vscdb"))
 }
 
-fn store_path() -> PathBuf {
-    crate::data_dir().with_file_name("cursor.json")
-}
-
 pub fn load_persisted() -> UsageSnapshot {
-    std::fs::read_to_string(store_path())
-        .ok()
-        .and_then(|t| serde_json::from_str::<UsageSnapshot>(&t).ok())
-        .map(|mut s| {
-            if !s.windows.is_empty() {
-                s.status = "stale".into();
-            }
-            s
-        })
-        .unwrap_or_default()
+    crate::storage::load_provider_snapshot(crate::storage::ProviderId::Cursor)
 }
 
 fn persist(s: &UsageSnapshot) {
-    if let Ok(t) = serde_json::to_string_pretty(s) {
-        let _ = std::fs::write(store_path(), t);
-    }
+    crate::storage::persist_provider_snapshot(crate::storage::ProviderId::Cursor, s);
 }
 
 pub fn present() -> bool {
@@ -160,11 +145,11 @@ pub fn parse_summary(v: &serde_json::Value) -> (Vec<LimitWindow>, String) {
     let mut out = Vec::new();
     // Headline = the dashboard number; 0 is a reading too
     if let Some(total) = pct(plan.get("totalPercentUsed")) {
-        out.push(LimitWindow { id: "included".into(), label: "Included usage".into(), used: total, resets_at, ..Default::default() });
+        out.push(LimitWindow::percentage("included", "Included usage", total, resets_at));
     }
     if let Some(api) = pct(plan.get("apiPercentUsed")) {
         if api > 0.0 {
-            out.push(LimitWindow { id: "api".into(), label: "API usage".into(), used: api, resets_at, ..Default::default() });
+            out.push(LimitWindow::percentage("api", "API usage", api, resets_at));
         }
     }
     if let Some(od) = usage.get("onDemand") {
@@ -173,12 +158,7 @@ pub fn parse_summary(v: &serde_json::Value) -> (Vec<LimitWindow>, String) {
         let used = od.get("used").and_then(|x| x.as_f64());
         if enabled && limit > 0.0 {
             if let Some(u) = used {
-                out.push(LimitWindow {
-                    id: "on_demand".into(),
-                    label: "On demand".into(),
-                    used: (u / limit).clamp(0.0, 1.0),
-                    resets_at, ..Default::default()
-                });
+                out.push(LimitWindow::percentage("on_demand", "On demand", (u / limit).clamp(0.0, 1.0), resets_at));
             }
         }
     }
