@@ -1,3 +1,4 @@
+pub mod storage;
 pub mod usage;
 pub mod cursor;
 pub mod codex;
@@ -16,7 +17,7 @@ pub struct AppState {
 }
 
 pub fn data_dir() -> PathBuf {
-    dirs::config_dir().unwrap_or_else(|| PathBuf::from("")).join("codenotch-win")
+    storage::app_data_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 /// Whether Claude Code appears to be running on this machine.

@@ -65,27 +65,12 @@ fn state_root() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".gemini").join("antigravity"))
 }
 
-fn store_path() -> PathBuf {
-    crate::data_dir().with_file_name("antigravity.json")
-}
-
 pub fn load_persisted() -> UsageSnapshot {
-    std::fs::read_to_string(store_path())
-        .ok()
-        .and_then(|t| serde_json::from_str::<UsageSnapshot>(&t).ok())
-        .map(|mut s| {
-            if !s.windows.is_empty() {
-                s.status = "stale".into();
-            }
-            s
-        })
-        .unwrap_or_default()
+    crate::storage::load_provider_snapshot(crate::storage::ProviderId::Antigravity)
 }
 
 fn persist(s: &UsageSnapshot) {
-    if let Ok(t) = serde_json::to_string_pretty(s) {
-        let _ = std::fs::write(store_path(), t);
-    }
+    crate::storage::persist_provider_snapshot(crate::storage::ProviderId::Antigravity, s);
 }
 
 /// Is Antigravity installed: the state directory exists, or Credential Manager holds its token
@@ -237,13 +222,12 @@ pub fn windows_from_bridge(v: &serde_json::Value) -> Vec<LimitWindow> {
                 continue;
             }
             let bname = b.get("displayName").and_then(|x| x.as_str());
-            out.push(LimitWindow {
-                id: b.get("bucketId").and_then(|x| x.as_str()).or(gname).unwrap_or("quota").to_string(),
-                label: gname.or(bname).unwrap_or("Usage").to_string(),
-                used: (1.0 - rem).clamp(0.0, 1.0),
-                resets_at: parse_iso(b.get("resetTime")),
-                ..Default::default()
-            });
+            out.push(LimitWindow::percentage(
+                b.get("bucketId").and_then(|x| x.as_str()).or(gname).unwrap_or("quota"),
+                gname.or(bname).unwrap_or("Usage"),
+                (1.0 - rem).clamp(0.0, 1.0),
+                parse_iso(b.get("resetTime")),
+            ));
         }
     }
     out
@@ -403,13 +387,13 @@ fn direct_quota(token: &str) -> Option<Vec<LimitWindow>> {
                 .and_then(|x| x.as_str())
                 .unwrap_or("Usage")
                 .to_string();
-            Some(LimitWindow {
-                id: b.get("name").and_then(|x| x.as_str()).unwrap_or(&label).to_string(),
+            let id = b.get("name").and_then(|x| x.as_str()).unwrap_or(&label).to_string();
+            Some(LimitWindow::percentage(
+                id,
                 label,
-                used: (used / limit).clamp(0.0, 1.0),
-                resets_at: parse_iso(b.get("resetTime")),
-                ..Default::default()
-            })
+                (used / limit).clamp(0.0, 1.0),
+                parse_iso(b.get("resetTime")),
+            ))
         })
         .collect();
     if out.is_empty() {
@@ -555,14 +539,14 @@ fn read_once(rt: &mut Runtime, prev: &UsageSnapshot) -> UsageSnapshot {
     let (n, latest) = requests_today();
     snap.status = "ok".into();
     snap.fetched_at = latest.unwrap_or_else(now_ms);
-    snap.windows = vec![LimitWindow {
-        id: "requests".into(),
-        label: "Requests today · no limit published".into(),
-        used: 0.0,
-        resets_at: None,
-        count: Some(n as i64),
-        derived: true,
-    }];
+    snap.windows = vec![LimitWindow::count(
+        "requests",
+        "Requests today · no limit published",
+        n as i64,
+        None,
+        None,
+        true,
+    )];
     snap.note = match tier {
         Some(t) => format!("{t} · Google publishes no quota for this account"),
         None => "Open Antigravity to read its quota".into(),

@@ -44,7 +44,33 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum UsageMetric {
+    Percentage {
+        used_percent: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resets_at: Option<u64>,
+    },
+    Count {
+        used: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resets_at: Option<u64>,
+        #[serde(default)]
+        derived: bool,
+    },
+    Tokens {
+        used: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resets_at: Option<u64>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct LimitWindow {
     pub id: String,
     pub label: String,
@@ -58,9 +84,91 @@ pub struct LimitWindow {
     /// The number is ours, not the vendor's (upstream fidelity=.derived) — the card adds a ~ prefix
     #[serde(default)]
     pub derived: bool,
+    /// Explicit typed metric (prevents request counts being displayed as percentages)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric: Option<UsageMetric>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+impl LimitWindow {
+    pub fn resolved_metric(&self) -> UsageMetric {
+        if let Some(m) = &self.metric {
+            return m.clone();
+        }
+        if let Some(c) = self.count {
+            UsageMetric::Count {
+                used: c,
+                limit: None,
+                resets_at: self.resets_at,
+                derived: self.derived,
+            }
+        } else {
+            UsageMetric::Percentage {
+                used_percent: (self.used * 100.0).clamp(0.0, 100.0),
+                resets_at: self.resets_at,
+            }
+        }
+    }
+
+    pub fn percentage(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        fraction: f64,
+        resets_at: Option<u64>,
+    ) -> Self {
+        let f = fraction.clamp(0.0, 1.0);
+        let id_str = id.into();
+        let label_str = label.into();
+        Self {
+            id: id_str,
+            label: label_str,
+            used: f,
+            resets_at,
+            count: None,
+            derived: false,
+            metric: Some(UsageMetric::Percentage {
+                used_percent: (f * 100.0).clamp(0.0, 100.0),
+                resets_at,
+            }),
+        }
+    }
+
+    pub fn count(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        count: i64,
+        limit: Option<i64>,
+        resets_at: Option<u64>,
+        derived: bool,
+    ) -> Self {
+        let id_str = id.into();
+        let label_str = label.into();
+        let used = if let Some(lim) = limit {
+            if lim > 0 {
+                (count as f64 / lim as f64).clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+        Self {
+            id: id_str,
+            label: label_str,
+            used,
+            resets_at,
+            count: Some(count),
+            derived,
+            metric: Some(UsageMetric::Count {
+                used: count,
+                limit,
+                resets_at,
+                derived,
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct UsageSnapshot {
     /// ok | stale | needsAuth | backoff | error
     pub status: String,
@@ -71,27 +179,12 @@ pub struct UsageSnapshot {
     pub backoff_until: u64,
 }
 
-fn store_path() -> std::path::PathBuf {
-    crate::data_dir().with_file_name("usage.json")
-}
-
 pub fn load_persisted() -> UsageSnapshot {
-    std::fs::read_to_string(store_path())
-        .ok()
-        .and_then(|t| serde_json::from_str::<UsageSnapshot>(&t).ok())
-        .map(|mut s| {
-            if !s.windows.is_empty() {
-                s.status = "stale".into(); // an old reading after a restart is labelled as such
-            }
-            s
-        })
-        .unwrap_or_default()
+    crate::storage::load_provider_snapshot(crate::storage::ProviderId::Claude)
 }
 
 fn persist(s: &UsageSnapshot) {
-    if let Ok(t) = serde_json::to_string_pretty(s) {
-        let _ = std::fs::write(store_path(), t);
-    }
+    crate::storage::persist_provider_snapshot(crate::storage::ProviderId::Claude, s);
 }
 
 fn parse_credentials_value(v: &serde_json::Value, now: u64) -> Option<(String, bool)> {
@@ -178,12 +271,12 @@ fn parse_response(v: &serde_json::Value) -> Vec<LimitWindow> {
             if resets.is_none() {
                 continue; // upstream rule: a window without a reset time is not shown
             }
-            out.push(LimitWindow {
-                id: kind.to_string(),
-                label: label_for(kind),
-                used: (pct / 100.0).clamp(0.0, 1.0),
-                resets_at: resets, ..Default::default()
-            });
+            out.push(LimitWindow::percentage(
+                kind,
+                label_for(kind),
+                pct / 100.0,
+                resets,
+            ));
         }
     }
     // Fallback merge: a window that just rolled over disappears from limits while the named field remains.
@@ -210,7 +303,7 @@ fn parse_response(v: &serde_json::Value) -> Vec<LimitWindow> {
         if dup {
             continue;
         }
-        out.push(LimitWindow { id: id.into(), label, used, resets_at, ..Default::default() });
+        out.push(LimitWindow::percentage(id, label, used, resets_at));
     }
     // session always comes first (upstream display order)
     out.sort_by_key(|w| if w.id == "session" { 0 } else { 1 });

@@ -57,28 +57,14 @@ fn codex_home() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".codex"))
 }
 
-fn store_path() -> PathBuf {
-    crate::data_dir().with_file_name("codex.json")
-}
-
 pub fn load_persisted() -> UsageSnapshot {
-    std::fs::read_to_string(store_path())
-        .ok()
-        .and_then(|t| serde_json::from_str::<UsageSnapshot>(&t).ok())
-        .map(|mut s| {
-            if !s.windows.is_empty() {
-                s.status = "stale".into();
-            }
-            BACKOFF_UNTIL.store(s.backoff_until, std::sync::atomic::Ordering::Relaxed);
-            s
-        })
-        .unwrap_or_default()
+    let s = crate::storage::load_provider_snapshot(crate::storage::ProviderId::Codex);
+    BACKOFF_UNTIL.store(s.backoff_until, std::sync::atomic::Ordering::Relaxed);
+    s
 }
 
 fn persist(s: &UsageSnapshot) {
-    if let Ok(t) = serde_json::to_string_pretty(s) {
-        let _ = std::fs::write(store_path(), t);
-    }
+    crate::storage::persist_provider_snapshot(crate::storage::ProviderId::Codex, s);
 }
 
 // ---------------- Locating the executable ----------------
@@ -254,13 +240,12 @@ fn windows_from_usage(v: &serde_json::Value) -> Vec<LimitWindow> {
         let resets_at = num(w.get("reset_at"))
             .map(|s| (s * 1000.0) as u64)
             .or_else(|| num(w.get("reset_after_seconds")).map(|s| now + (s * 1000.0) as u64));
-        out.push(LimitWindow {
-            id: id.into(),
-            label: label_for(num(w.get("limit_window_seconds")).map(|s| s / 60.0), id),
-            used: (pct / 100.0).clamp(0.0, 1.0),
+        out.push(LimitWindow::percentage(
+            id,
+            label_for(num(w.get("limit_window_seconds")).map(|s| s / 60.0), id),
+            (pct / 100.0).clamp(0.0, 1.0),
             resets_at,
-            ..Default::default()
-        });
+        ));
     }
     out
 }
@@ -345,12 +330,12 @@ pub fn snapshot_from_rollout(text: &str) -> Option<(Vec<LimitWindow>, Option<u64
             let resets_at = num(w.get("resets_at"))
                 .map(|s| (s * 1000.0) as u64)
                 .or_else(|| num(w.get("resets_in_seconds")).map(|s| now + (s * 1000.0) as u64));
-            out.push(LimitWindow {
-                id: id.into(),
-                label: label_for(num(w.get("window_minutes")), id),
-                used: (pct / 100.0).clamp(0.0, 1.0),
-                resets_at, ..Default::default()
-            });
+            out.push(LimitWindow::percentage(
+                id,
+                label_for(num(w.get("window_minutes")), id),
+                (pct / 100.0).clamp(0.0, 1.0),
+                resets_at,
+            ));
         }
         if out.is_empty() {
             continue;
@@ -384,7 +369,7 @@ fn read_once() -> UsageSnapshot {
         match load_credential() {
             None => {
                 if auth_path().map(|p| p.is_file()).unwrap_or(false) {
-                    println!("LOG: {}", "codex: auth.json has no usable access_token/account_id, falling back to the rollout");
+                    println!("LOG: codex: auth.json has no usable access_token/account_id, falling back to the rollout");
                 }
             }
             Some(cred) => match fetch_usage(&cred) {

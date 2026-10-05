@@ -170,99 +170,40 @@ fn apply_notch_region_inner(
     scale_factor: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use windows::Win32::Foundation::{HWND, POINT, RECT};
+    use windows::Win32::Foundation::{HWND, POINT};
     use windows::Win32::Graphics::Gdi::{
-        CreatePolygonRgn, DeleteObject, GetWindowRgnBox, SetWindowRgn, CREATE_POLYGON_RGN_MODE,
+        CreatePolygonRgn, DeleteObject, SetWindowRgn, CREATE_POLYGON_RGN_MODE,
     };
-    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
     let window = window.ok_or("notch window not found for SetWindowRgn")?;
     let handle = window.window_handle()?.as_raw();
     if let RawWindowHandle::Win32(win32) = handle {
         let hwnd = HWND(win32.hwnd.get() as *mut _);
-        let logical_pts = notch_polygon_logical(logical_width, logical_height);
-        let points: Vec<POINT> = logical_pts
-            .into_iter()
-            .map(|(x, y)| POINT {
-                x: x.round() as i32,
-                y: y.round() as i32,
-            })
-            .collect();
-        let _ = scale_factor;
-        if points.len() < 3 {
+        let sf = if scale_factor > 0.0 && scale_factor.is_finite() {
+            scale_factor
+        } else {
+            1.0
+        };
+        let physical_pts = notch_polygon_physical(logical_width, logical_height, sf);
+        if physical_pts.len() < 3 {
             return Err("notch polygon has <3 points".into());
         }
-        // Debug log to E:\Temp\codenotch_region.log (production has no console)
-        let log_path = std::path::PathBuf::from("E:\\Temp\\codenotch_region.log");
-        let _ = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .and_then(|mut f| {
-                use std::io::Write;
-                writeln!(
-                    f,
-                    "apply_region w={} h={} scale={} points_len={} first={:?} last={:?} hwnd={:?}",
-                    logical_width,
-                    logical_height,
-                    scale_factor,
-                    points.len(),
-                    points.first(),
-                    points.last(),
-                    hwnd
-                )
-            });
+        let points: Vec<POINT> = physical_pts
+            .into_iter()
+            .map(|(x, y)| POINT { x, y })
+            .collect();
+
         unsafe {
+            // ALTERNATE fill mode = 1
             let hrgn = CreatePolygonRgn(&points, CREATE_POLYGON_RGN_MODE(1));
             if hrgn.is_invalid() {
-                let _ = std::fs::write(&log_path, "CreatePolygonRgn failed\n");
                 return Err("CreatePolygonRgn failed".into());
             }
-            // Verify GetWindowRect size matches
-            let mut wr = RECT::default();
-            let _ = GetWindowRect(hwnd, &mut wr);
-            let wr_w = wr.right - wr.left;
-            let wr_h = wr.bottom - wr.top;
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-                .and_then(|mut f| {
-                    use std::io::Write;
-                    writeln!(
-                        f,
-                        "apply_region w={} h={} scale={} wr={}x{} points_len={} hrgn={:?}",
-                        logical_width, logical_height, scale_factor, wr_w, wr_h, points.len(), hrgn
-                    )
-                });
             let ok = SetWindowRgn(hwnd, Some(hrgn), true);
             if ok == 0 {
                 let _ = DeleteObject(hrgn.into());
-                let _ = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_path)
-                    .and_then(|mut f| {
-                        use std::io::Write;
-                        writeln!(f, "SetWindowRgn failed")
-                    });
                 return Err("SetWindowRgn failed".into());
             }
-            // Verify region box
-            let mut rbox = RECT::default();
-            let region_type = GetWindowRgnBox(hwnd, &mut rbox);
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-                .and_then(|mut f| {
-                    use std::io::Write;
-                    writeln!(
-                        f,
-                        "SetWindowRgn ok region_type={:?} rbox={:?} wr={}x{}",
-                        region_type, rbox, wr_w, wr_h
-                    )
-                });
         }
     }
     Ok(())
@@ -275,23 +216,9 @@ pub fn apply_notch_region_cmd(
     width: f64,
     height: f64,
     scale_factor: Option<f64>,
-    scaleFactor: Option<f64>,
+    #[allow(non_snake_case)] scaleFactor: Option<f64>,
 ) -> Result<(), String> {
     let sf = scale_factor.or(scaleFactor).unwrap_or(1.0);
-    // Log invocation to a fixed path on E: for debugging (production has no console)
-    let log_path = std::path::PathBuf::from("E:\\Temp\\codenotch_region.log");
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .and_then(|mut f| {
-            use std::io::Write;
-            writeln!(
-                f,
-                "cmd invoked w={} h={} sf={:?} scaleFactor={:?} chosen={}",
-                width, height, scale_factor, scaleFactor, sf
-            )
-        });
     apply_notch_region_inner(app.get_webview_window("notch"), width, height, sf)
         .map_err(|e| e.to_string())
 }
@@ -303,7 +230,7 @@ pub fn apply_notch_region_cmd(
     _width: f64,
     _height: f64,
     _scale_factor: Option<f64>,
-    _scaleFactor: Option<f64>,
+    #[allow(non_snake_case)] _scaleFactor: Option<f64>,
 ) -> Result<(), String> {
     Ok(())
 }
@@ -312,9 +239,14 @@ pub fn apply_notch_region_cmd(
 /// expressed back in logical pixels. The OS places windows on physical pixels,
 /// so a fractional physical edge gets rounded by the compositor and the notch
 /// floats a hairline off the screen edge (the macOS 0.7pt flush-gap bug).
-#[allow(dead_code)] // No Rust call-site yet: the live path rounds in TS (notchGeometry.ts). Kept as the tested reference implementation; a Rust call-site lands with runtime re-anchor work.
+#[allow(dead_code)]
 pub fn round_to_physical(logical: f64, scale_factor: f64) -> f64 {
-    (logical * scale_factor).round() / scale_factor
+    let sf = if scale_factor > 0.0 && scale_factor.is_finite() {
+        scale_factor
+    } else {
+        1.0
+    };
+    (logical * sf).round() / sf
 }
 
 #[cfg(test)]
@@ -342,34 +274,37 @@ mod tests {
     fn notch_polygon_matches_ts_samples() {
         // TS notchPath(70, 300) samples: top (70,0), innerTop (7.7,38.5), apex (0,150), innerBottom (7.7,261.5), bottom (70,300)
         let pts = notch_polygon_logical(70.0, 300.0);
-        // First two are top, bottom
         assert_eq!(pts[0], (70.0, 0.0));
         assert_eq!(pts[1], (70.0, 300.0));
-        // Second is innerBottom (index 2)
         assert!((pts[2].0 - 7.7).abs() < 1e-9);
         assert!((pts[2].1 - 261.5).abs() < 1e-9);
-        // Last is innerTop
         let last = pts.last().unwrap();
         assert!((last.0 - 7.7).abs() < 1e-9);
         assert!((last.1 - 38.5).abs() < 1e-9);
-        // Apex of the quadratic bezier is at (3.85,150), not the control (0,150);
-        // the TS `samples` exposes the control point, but the actual curve passes 3.85px in.
         let has_apex = pts.iter().any(|(x, y)| (*x - 3.85).abs() < 0.5 && (*y - 150.0).abs() < 1.0);
         assert!(has_apex, "bezier samples should include near-apex (3.85,150), got {:?}", pts);
-        // Check that curve samples are present (32 steps + 3 extra points = 35 total)
-        assert_eq!(pts.len(), 35); // top,bottom,innerBottom +31 interior bezier + innerTop
+        assert_eq!(pts.len(), 35);
     }
 
     #[test]
-    fn notch_polygon_physical_rounding() {
-        // Logical 70x300 at 1.25 → physical 88x375 (70*1.25=87.5→88, 300*1.25=375)
-        // But our height for 3 cells is 300.75 → physical 376, test with exact 70,300
+    fn notch_polygon_physical_at_100() {
+        let phys = notch_polygon_physical(70.0, 300.0, 1.0);
+        assert_eq!(phys[0], (70, 0));
+        assert_eq!(phys[1], (70, 300));
+        assert_eq!(phys[2], (8, 262)); // 7.7 rounded to 8, 261.5 rounded to 262
+        let last = phys.last().unwrap();
+        assert_eq!(*last, (8, 39)); // 7.7 -> 8, 38.5 -> 39
+    }
+
+    #[test]
+    fn notch_polygon_physical_rounding_at_125() {
+        // Logical 70x300 at 1.25 -> physical 88x375 (70*1.25=87.5->88, 300*1.25=375)
         let phys = notch_polygon_physical(70.0, 300.0, 1.25);
-        assert_eq!(phys[0], (88, 0)); // top (70*1.25=87.5→88, 0)
-        assert_eq!(phys[1], (88, 375)); // bottom (70→88, 300→375)
-        // innerBottom (7.7,261.5) *1.25 = (9.625→10, 326.875→327)
+        assert_eq!(phys[0], (88, 0));
+        assert_eq!(phys[1], (88, 375));
+        // innerBottom (7.7,261.5) * 1.25 = (9.625->10, 326.875->327)
         assert_eq!(phys[2], (10, 327));
-        // innerTop (7.7,38.5) *1.25 = (10,48)
+        // innerTop (7.7,38.5) * 1.25 = (10, 48)
         let last = phys.last().unwrap();
         assert_eq!(*last, (10, 48));
     }
@@ -379,13 +314,35 @@ mod tests {
         let phys = notch_polygon_physical(70.0, 300.0, 1.5);
         assert_eq!(phys[0], (105, 0)); // 70*1.5=105
         assert_eq!(phys[1], (105, 450)); // 300*1.5=450
+        // innerBottom (7.7, 261.5) * 1.5 = (11.55->12, 392.25->392)
+        assert_eq!(phys[2], (12, 392));
+        let last = phys.last().unwrap();
+        assert_eq!(*last, (12, 58)); // 38.5 * 1.5 = 57.75 -> 58
+    }
+
+    #[test]
+    fn notch_polygon_physical_at_175() {
+        let phys = notch_polygon_physical(70.0, 300.0, 1.75);
+        assert_eq!(phys[0], (123, 0)); // 70 * 1.75 = 122.5 -> 123
+        assert_eq!(phys[1], (123, 525)); // 300 * 1.75 = 525
+        assert_eq!(phys.len(), 35);
+    }
+
+    #[test]
+    fn notch_polygon_physical_at_200() {
+        let phys = notch_polygon_physical(70.0, 300.0, 2.0);
+        assert_eq!(phys[0], (140, 0)); // 70 * 2.0 = 140
+        assert_eq!(phys[1], (140, 600)); // 300 * 2.0 = 600
+        assert_eq!(phys[2], (15, 523)); // 7.7 * 2 = 15.4 -> 15, 261.5 * 2 = 523
+        let last = phys.last().unwrap();
+        assert_eq!(*last, (15, 77)); // 38.5 * 2 = 77
+        assert_eq!(phys.len(), 35);
     }
 
     #[test]
     fn notch_polygon_noop_for_small_height() {
-        // height/2 < curl → curl clamps to height/2
+        // height/2 < curl -> curl clamps to height/2
         let pts = notch_polygon_logical(70.0, 40.0);
-        // curl = min(38.5,70,20)=20, flare=20, innerTop=(4,20)
         assert!((pts[2].1 - 20.0).abs() < 1e-9 || (pts[2].1 - (40.0 - 20.0)).abs() < 1e-9);
     }
 }
