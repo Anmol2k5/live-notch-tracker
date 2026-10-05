@@ -1,6 +1,6 @@
+use crate::usage::UsageSnapshot;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use crate::usage::UsageSnapshot;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -134,7 +134,14 @@ mod tests {
 
         let snap = UsageSnapshot {
             status: "ok".into(),
-            windows: vec![LimitWindow::count("test", "Test Label", 42, None, None, true)],
+            windows: vec![LimitWindow::count(
+                "test",
+                "Test Label",
+                42,
+                None,
+                None,
+                true,
+            )],
             fetched_at: 12345678,
             note: "test note".into(),
             backoff_until: 0,
@@ -143,12 +150,18 @@ mod tests {
         let json = serde_json::to_string_pretty(&snap).expect("serialize");
         std::fs::write(&path, &json).expect("write");
 
-        let read_back: UsageSnapshot = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let read_back: UsageSnapshot =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(read_back.status, "ok");
         assert_eq!(read_back.windows.len(), 1);
         let metric = read_back.windows[0].resolved_metric();
         match metric {
-            UsageMetric::Count { used, limit, derived, .. } => {
+            UsageMetric::Count {
+                used,
+                limit,
+                derived,
+                ..
+            } => {
                 assert_eq!(used, 42);
                 assert_eq!(limit, None);
                 assert!(derived);

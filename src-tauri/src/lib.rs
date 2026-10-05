@@ -1,12 +1,12 @@
+pub mod antigravity;
+pub mod codex;
+pub mod cursor;
 pub mod storage;
 pub mod usage;
-pub mod cursor;
-pub mod codex;
-pub mod antigravity;
 mod window;
 
-use std::sync::Mutex;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
 pub struct AppState {
@@ -54,22 +54,38 @@ pub fn is_claude_running() -> bool {
 
 #[tauri::command]
 fn get_usage(state: tauri::State<AppState>) -> usage::UsageSnapshot {
-    state.usage.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    state
+        .usage
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 #[tauri::command]
 fn get_cursor(state: tauri::State<AppState>) -> usage::UsageSnapshot {
-    state.cursor.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    state
+        .cursor
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 #[tauri::command]
 fn get_codex(state: tauri::State<AppState>) -> usage::UsageSnapshot {
-    state.codex.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    state
+        .codex
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 #[tauri::command]
 fn get_antigravity(state: tauri::State<AppState>) -> usage::UsageSnapshot {
-    state.antigravity.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    state
+        .antigravity
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 #[tauri::command]
@@ -88,7 +104,7 @@ fn refresh_usage(app: AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = std::fs::create_dir_all(data_dir());
-    
+
     tauri::Builder::default()
         .manage(AppState {
             usage: Mutex::new(usage::load_persisted()),
@@ -122,13 +138,13 @@ pub fn run() {
                     let _ = window::apply_notch_styles_cmd(h);
                 });
             }
-            
+
             let handle = app.handle().clone();
             usage::start(handle.clone());
             codex::start(handle.clone());
             cursor::start(handle.clone());
             antigravity::start(handle.clone());
-            
+
             Ok(())
         })
         .run(tauri::generate_context!())

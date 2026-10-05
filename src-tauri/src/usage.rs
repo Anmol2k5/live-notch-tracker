@@ -6,6 +6,7 @@
 //!   - 401/403 → re-read the credential once and retry (Claude Code may have just refreshed the token) → still failing means needsAuth
 //!   - 429 → back off 60 s × 2^n capped at 15 min, Retry-After only raises it; the deadline is persisted
 //!   - never invent a percentage on failure: keep the last reading marked stale, and the UI shows how old it is
+//!
 //! Reply (snake_case): { limits:[{kind,percent,resets_at}], five_hour:{utilization,resets_at}, seven_day:{...} }
 //! limits is the forward-compatible main shape; five_hour/seven_day are merged in as a fallback (a window that just rolled over disappears from limits).
 
@@ -285,11 +286,17 @@ fn parse_response(v: &serde_json::Value) -> Vec<LimitWindow> {
     // "Weekly (all models)" as twins). Three dedupe rules: id alias / same resets_at and percentage / same label.
     let aliases: [(&str, &str, &[&str]); 2] = [
         ("five_hour", "session", &["session", "five_hour"]),
-        ("seven_day", "seven_day", &["seven_day", "weekly_all", "weekly"]),
+        (
+            "seven_day",
+            "seven_day",
+            &["seven_day", "weekly_all", "weekly"],
+        ),
     ];
     for (field, id, alias) in aliases {
         let Some(w) = v.get(field) else { continue };
-        let Some(u) = w.get("utilization").and_then(|x| x.as_f64()) else { continue };
+        let Some(u) = w.get("utilization").and_then(|x| x.as_f64()) else {
+            continue;
+        };
         let used = (u / 100.0).clamp(0.0, 1.0);
         let resets_at = w.get("resets_at").and_then(parse_reset);
         let label = label_for(id);
@@ -346,7 +353,8 @@ fn fetch_once(token: &str) -> Result<Vec<LimitWindow>, FetchErr> {
 
 fn backoff_secs(consecutive: u32, retry_after_floor: u64) -> u64 {
     let exp = BACKOFF_BASE_SECS.saturating_mul(1u64 << consecutive.min(4));
-    exp.clamp(BACKOFF_BASE_SECS, BACKOFF_CAP_SECS).max(retry_after_floor)
+    exp.clamp(BACKOFF_BASE_SECS, BACKOFF_CAP_SECS)
+        .max(retry_after_floor)
 }
 
 fn set_and_broadcast(app: &AppHandle, mutate: impl FnOnce(&mut UsageSnapshot)) {
@@ -490,7 +498,7 @@ mod tests {
         let ids: Vec<&str> = w.iter().map(|x| x.id.as_str()).collect();
         assert!(ids.contains(&"weekly_all"));
         assert!(ids.contains(&"session")); // five_hour maps to session id
-        // seven_day should not appear as duplicate
+                                           // seven_day should not appear as duplicate
         assert!(!ids.contains(&"seven_day"));
     }
 
@@ -559,7 +567,10 @@ mod tests {
     fn malformed_empty_object_yields_no_windows() {
         let v = json!({});
         let w = parse_response(&v);
-        assert!(w.is_empty(), "empty object should not panic and should yield no windows");
+        assert!(
+            w.is_empty(),
+            "empty object should not panic and should yield no windows"
+        );
     }
 
     #[test]
@@ -600,7 +611,10 @@ mod tests {
 
     #[test]
     fn malformed_json_does_not_panic_on_invalid_reset() {
-        let v: serde_json::Value = serde_json::from_str(r#"{"limits":[{"kind":"session","percent":42.5,"resets_at":null}]}"#).unwrap();
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"limits":[{"kind":"session","percent":42.5,"resets_at":null}]}"#,
+        )
+        .unwrap();
         let w = std::panic::catch_unwind(|| parse_response(&v));
         assert!(w.is_ok());
         assert!(w.unwrap().is_empty());

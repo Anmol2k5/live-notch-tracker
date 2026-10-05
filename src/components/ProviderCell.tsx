@@ -79,6 +79,15 @@ export function ProviderCell({
       className="provider-cell"
       title={fullTooltip}
       onClick={onRefresh}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onRefresh?.();
+        }
+      }}
+      tabIndex={0}
+      role="button"
+      aria-label={`${meta.displayName}: ${metricText}. ${status.kind === 'ok' ? '' : status.kind}. Click or press Enter to refresh.`}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{

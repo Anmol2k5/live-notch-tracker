@@ -39,8 +39,18 @@ export function NotchRootView({
         {cells.length === 0 ? (
           // Sensible empty / listening state when no AI tool is running
           <div
+            className="idle-action"
             title="Live Notch Tracker&#10;No active AI provider sessions detected&#10;Open Claude, Cursor, Codex, or Antigravity&#10;Click to refresh"
             onClick={onRefreshAll}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onRefreshAll?.();
+              }
+            }}
+            tabIndex={0}
+            role="button"
+            aria-label="No active AI provider sessions detected. Press Enter to check for active providers."
             style={{
               cursor: 'pointer',
               display: 'flex',

@@ -44,7 +44,8 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const POLL_SECS: u64 = 300;
 const LOAD_CODE_ASSIST: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
-const QUOTA_SUMMARY: &str = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
+const QUOTA_SUMMARY: &str =
+    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
 const LS_SERVICE: &str = "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary";
 const CSRF_HEADER: &str = "x-codeium-csrf-token";
 
@@ -88,13 +89,17 @@ struct Endpoint {
 
 fn run_hidden(program: &str, args: &[&str]) -> String {
     let mut cmd = std::process::Command::new(program);
-    cmd.args(args).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
     }
-    cmd.output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default()
+    cmd.output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
 }
 
 /// The process table is the only source of truth: the token is on the command line and the port is written nowhere
@@ -123,10 +128,15 @@ fn discover() -> Option<Endpoint> {
 #[cfg(not(windows))]
 fn discover() -> Option<Endpoint> {
     let table = run_hidden("ps", &["-Ao", "pid,command"]);
-    let line = table.lines().find(|l| l.contains("language_server") && l.contains("--csrf_token"))?;
+    let line = table
+        .lines()
+        .find(|l| l.contains("language_server") && l.contains("--csrf_token"))?;
     let pid: u32 = line.trim().split_whitespace().next()?.parse().ok()?;
     let csrf = flag_value(line, "--csrf_token")?;
-    let out = run_hidden("lsof", &["-nP", "-a", "-p", &pid.to_string(), "-iTCP", "-sTCP:LISTEN"]);
+    let out = run_hidden(
+        "lsof",
+        &["-nP", "-a", "-p", &pid.to_string(), "-iTCP", "-sTCP:LISTEN"],
+    );
     let ports: Vec<u16> = out
         .lines()
         .filter_map(|l| l.split_whitespace().rev().find(|w| w.contains(':')))
@@ -172,7 +182,12 @@ fn local_agent() -> Option<ureq::Agent> {
         .danger_accept_invalid_hostnames(true)
         .build()
         .ok()?;
-    Some(ureq::AgentBuilder::new().tls_connector(Arc::new(tls)).timeout(Duration::from_secs(10)).build())
+    Some(
+        ureq::AgentBuilder::new()
+            .tls_connector(Arc::new(tls))
+            .timeout(Duration::from_secs(10))
+            .build(),
+    )
 }
 
 fn bridge_quota(ep: &Endpoint) -> Result<Vec<LimitWindow>, String> {
@@ -212,18 +227,27 @@ fn parse_iso(v: Option<&serde_json::Value>) -> Option<u64> {
 /// The server reports what remains and the notch shows what is used: flip it here so the view never learns about provider differences
 pub fn windows_from_bridge(v: &serde_json::Value) -> Vec<LimitWindow> {
     let mut out = Vec::new();
-    let Some(groups) = v.pointer("/response/groups").and_then(|g| g.as_array()) else { return out };
+    let Some(groups) = v.pointer("/response/groups").and_then(|g| g.as_array()) else {
+        return out;
+    };
     for g in groups {
         let gname = g.get("displayName").and_then(|x| x.as_str());
-        let Some(buckets) = g.get("buckets").and_then(|b| b.as_array()) else { continue };
+        let Some(buckets) = g.get("buckets").and_then(|b| b.as_array()) else {
+            continue;
+        };
         for b in buckets {
-            let Some(rem) = b.get("remainingFraction").and_then(|x| x.as_f64()) else { continue };
+            let Some(rem) = b.get("remainingFraction").and_then(|x| x.as_f64()) else {
+                continue;
+            };
             if !(0.0..=1.0).contains(&rem) {
                 continue;
             }
             let bname = b.get("displayName").and_then(|x| x.as_str());
             out.push(LimitWindow::percentage(
-                b.get("bucketId").and_then(|x| x.as_str()).or(gname).unwrap_or("quota"),
+                b.get("bucketId")
+                    .and_then(|x| x.as_str())
+                    .or(gname)
+                    .unwrap_or("quota"),
                 gname.or(bname).unwrap_or("Usage"),
                 (1.0 - rem).clamp(0.0, 1.0),
                 parse_iso(b.get("resetTime")),
@@ -245,11 +269,24 @@ struct Creds {
 #[cfg(windows)]
 fn read_credential_raw() -> Option<Vec<u8>> {
     use windows::core::PCWSTR;
-    use windows::Win32::Security::Credentials::{CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC};
-    let target: Vec<u16> = "gemini:antigravity".encode_utf16().chain(std::iter::once(0)).collect();
+    use windows::Win32::Security::Credentials::{
+        CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC,
+    };
+    let target: Vec<u16> = "gemini:antigravity"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
     let mut pcred: *mut CREDENTIALW = std::ptr::null_mut();
     unsafe {
-        if CredReadW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, Some(0), &mut pcred).is_err() || pcred.is_null() {
+        if CredReadW(
+            PCWSTR(target.as_ptr()),
+            CRED_TYPE_GENERIC,
+            Some(0),
+            &mut pcred,
+        )
+        .is_err()
+            || pcred.is_null()
+        {
             return None;
         }
         let c = &*pcred;
@@ -275,7 +312,10 @@ fn read_credential_raw() -> Option<Vec<u8>> {
 fn decode_credential(raw: &[u8]) -> Option<Creds> {
     let mut text = String::from_utf8(raw.to_vec()).unwrap_or_else(|_| {
         // Some writers store the blob as UTF-16LE
-        let u16s: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        let u16s: Vec<u16> = raw
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
         String::from_utf16_lossy(&u16s)
     });
     text = text.trim_matches('\0').trim().to_string();
@@ -285,12 +325,23 @@ fn decode_credential(raw: &[u8]) -> Option<Creds> {
     }
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
     let access = v.pointer("/token/access_token")?.as_str()?.to_string();
-    let expiry = v.pointer("/token/expiry").and_then(|x| x.as_str()).unwrap_or("");
+    let expiry = v
+        .pointer("/token/expiry")
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
     let expired = chrono::DateTime::parse_from_rfc3339(expiry)
         .map(|d| (d.timestamp_millis().max(0) as u64) <= now_ms())
         .unwrap_or(false);
-    let auth_method = v.get("auth_method").and_then(|x| x.as_str()).unwrap_or("").to_string();
-    Some(Creds { access_token: access, expired, auth_method })
+    let auth_method = v
+        .get("auth_method")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    Some(Creds {
+        access_token: access,
+        expired,
+        auth_method,
+    })
 }
 
 /// Dependency-free base64 (standard alphabet, tolerant of URL-safe characters and missing padding)
@@ -325,7 +376,9 @@ fn read_credentials() -> Option<Creds> {
 
 /// Tier name ("Personal"/"Pro"…); 401/403 → NeedsAuth
 fn load_tier(token: &str) -> Result<String, String> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(15)).build();
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(15))
+        .build();
     match agent
         .post(LOAD_CODE_ASSIST)
         .set("Authorization", &format!("Bearer {token}"))
@@ -337,16 +390,24 @@ fn load_tier(token: &str) -> Result<String, String> {
             let tier = v
                 .get("currentTier")
                 .or_else(|| {
-                    v.get("allowedTiers").and_then(|a| a.as_array()).and_then(|a| {
-                        a.iter().find(|t| t.get("isDefault").and_then(|x| x.as_bool()) == Some(true)).or(a.first())
-                    })
+                    v.get("allowedTiers")
+                        .and_then(|a| a.as_array())
+                        .and_then(|a| {
+                            a.iter()
+                                .find(|t| {
+                                    t.get("isDefault").and_then(|x| x.as_bool()) == Some(true)
+                                })
+                                .or(a.first())
+                        })
                 })
                 .and_then(|t| t.get("name"))
                 .and_then(|x| x.as_str())
                 .unwrap_or("Gemini");
             Ok(tier.to_string())
         }
-        Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => Err("needsAuth".into()),
+        Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
+            Err("needsAuth".into())
+        }
         Err(ureq::Error::Status(code, _)) => Err(format!("HTTP {code}")),
         Err(e) => Err(e.to_string()),
     }
@@ -354,7 +415,9 @@ fn load_tier(token: &str) -> Result<String, String> {
 
 /// Direct quota for licensed accounts; a personal account gets 403 → None (not an error)
 fn direct_quota(token: &str) -> Option<Vec<LimitWindow>> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(15)).build();
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(15))
+        .build();
     let r = agent
         .post(QUOTA_SUMMARY)
         .set("Authorization", &format!("Bearer {token}"))
@@ -387,7 +450,11 @@ fn direct_quota(token: &str) -> Option<Vec<LimitWindow>> {
                 .and_then(|x| x.as_str())
                 .unwrap_or("Usage")
                 .to_string();
-            let id = b.get("name").and_then(|x| x.as_str()).unwrap_or(&label).to_string();
+            let id = b
+                .get("name")
+                .and_then(|x| x.as_str())
+                .unwrap_or(&label)
+                .to_string();
             Some(LimitWindow::percentage(
                 id,
                 label,
@@ -416,12 +483,18 @@ pub(crate) fn count_requests_in_text(text: &str, today: chrono::NaiveDate) -> (u
         if !line.contains("\"MODEL\"") {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
         if v.get("source").and_then(|x| x.as_str()) != Some("MODEL") {
             continue;
         }
-        let Some(ts) = v.get("created_at").and_then(|x| x.as_str()) else { continue };
-        let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) else { continue };
+        let Some(ts) = v.get("created_at").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) else {
+            continue;
+        };
         let ms = dt.timestamp_millis().max(0) as u64;
         latest = Some(latest.map_or(ms, |l| l.max(ms)));
         if let Some(local) = Local.timestamp_millis_opt(ms as i64).single() {
@@ -437,14 +510,24 @@ pub(crate) fn count_requests_in_text(text: &str, today: chrono::NaiveDate) -> (u
 /// Today's MODEL steps (UTC timestamps compared by local day)
 pub fn requests_today() -> (u64, Option<u64>) {
     use chrono::Local;
-    let Some(root) = state_root().map(|r| r.join("brain")) else { return (0, None) };
-    let Ok(rd) = std::fs::read_dir(&root) else { return (0, None) };
+    let Some(root) = state_root().map(|r| r.join("brain")) else {
+        return (0, None);
+    };
+    let Ok(rd) = std::fs::read_dir(&root) else {
+        return (0, None);
+    };
     let today = Local::now().date_naive();
     let mut total = 0u64;
     let mut latest: Option<u64> = None;
     for e in rd.flatten() {
-        let p = e.path().join(".system_generated").join("logs").join("transcript.jsonl");
-        let Ok(text) = std::fs::read_to_string(&p) else { continue };
+        let p = e
+            .path()
+            .join(".system_generated")
+            .join("logs")
+            .join("transcript.jsonl");
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            continue;
+        };
         let (c, l) = count_requests_in_text(&text, today);
         total += c;
         if let Some(ms) = l {
@@ -499,7 +582,7 @@ fn read_once(rt: &mut Runtime, prev: &UsageSnapshot) -> UsageSnapshot {
         }
     }
     if tried && !bridge_err.is_empty() {
-        println!("LOG: {}", &format!("antigravity: local bridge failed ({bridge_err})"));
+        println!("LOG: antigravity: local bridge failed ({bridge_err})");
     }
     // 2. The bridge worked before: keep the last percentage marked stale instead of degrading to a count (8% → 31 looks broken)
     if rt.ever_bridged && !prev.windows.is_empty() {
@@ -524,14 +607,20 @@ fn read_once(rt: &mut Runtime, prev: &UsageSnapshot) -> UsageSnapshot {
             }
             Err(e) if e == "needsAuth" => {
                 snap.status = "needsAuth".into();
-                snap.note = "Antigravity's Google session was rejected — sign in again in Antigravity".into();
+                snap.note =
+                    "Antigravity's Google session was rejected — sign in again in Antigravity"
+                        .into();
                 return snap;
             }
-            Err(e) => println!("LOG: {}", &format!("antigravity: loadCodeAssist {e}")),
+            Err(e) => println!("LOG: antigravity: loadCodeAssist {e}"),
         },
         Some(c) => {
             // Expired ≠ signed out: Antigravity refreshes it on its next run; auth_method stands in for the tier
-            tier = Some(if c.auth_method == "consumer" { "Personal".into() } else { c.auth_method.clone() });
+            tier = Some(if c.auth_method == "consumer" {
+                "Personal".into()
+            } else {
+                c.auth_method.clone()
+            });
         }
         None => {}
     }
@@ -574,11 +663,21 @@ pub fn start(app: AppHandle) {
     std::thread::spawn(move || {
         {
             let st = app.state::<AppState>();
-            let snap = st.antigravity.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let snap = st
+                .antigravity
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
             let _ = app.emit("antigravity", &snap);
         }
         if !present() {
-            broadcast(&app, UsageSnapshot { status: "absent".into(), ..Default::default() });
+            broadcast(
+                &app,
+                UsageSnapshot {
+                    status: "absent".into(),
+                    ..Default::default()
+                },
+            );
             loop {
                 sleep_interruptible(600);
                 if present() {
@@ -586,11 +685,18 @@ pub fn start(app: AppHandle) {
                 }
             }
         }
-        let mut rt = Runtime { endpoint: None, ever_bridged: false };
+        let mut rt = Runtime {
+            endpoint: None,
+            ever_bridged: false,
+        };
         loop {
             let prev = {
                 let st = app.state::<AppState>();
-                let s = st.antigravity.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let s = st
+                    .antigravity
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
                 s
             };
             let snap = read_once(&mut rt, &prev);
@@ -602,7 +708,9 @@ pub fn start(app: AppHandle) {
 
 /// For doctor: contains no secrets
 pub fn probe() -> String {
-    let root = state_root().map(|p| p.display().to_string()).unwrap_or_default();
+    let root = state_root()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
     let has_root = state_root().map(|p| p.is_dir()).unwrap_or(false);
     let cred = read_credentials();
     let ep = discover();
@@ -646,8 +754,14 @@ mod tests {
         let w = windows_from_bridge(&v);
         assert_eq!(w.len(), 2);
         // used = 1 - remaining
-        assert!((w[0].used - 0.25).abs() < 1e-9, "remaining 0.75 -> used 0.25");
-        assert!((w[1].used - 0.80).abs() < 1e-9, "remaining 0.20 -> used 0.80");
+        assert!(
+            (w[0].used - 0.25).abs() < 1e-9,
+            "remaining 0.75 -> used 0.25"
+        );
+        assert!(
+            (w[1].used - 0.80).abs() < 1e-9,
+            "remaining 0.20 -> used 0.80"
+        );
         assert_eq!(w[0].id, "weekly");
         assert_eq!(w[0].label, "Gemini"); // group displayName wins
         assert!(w[0].resets_at.is_some());
@@ -737,7 +851,8 @@ mod tests {
             let bytes = json.as_bytes();
             // Use our own b64_decode's counterpart: encode via simple base64 for test
             let mut out = String::new();
-            const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            const TABLE: &[u8; 64] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
             let mut buf: u32 = 0;
             let mut bits: u8 = 0;
             let mut count = 0;
@@ -772,7 +887,10 @@ mod tests {
         assert!(decode_credential(b"{}").is_none());
         assert!(decode_credential(b"").is_none());
         // missing access_token
-        assert!(decode_credential(br#"{"auth_method":"x","token":{"expiry":"2099-01-01T00:00:00Z"}}"#).is_none());
+        assert!(decode_credential(
+            br#"{"auth_method":"x","token":{"expiry":"2099-01-01T00:00:00Z"}}"#
+        )
+        .is_none());
     }
 
     #[test]
@@ -802,7 +920,7 @@ mod tests {
 
     #[test]
     fn transcript_counts_model_today() {
-        use chrono::{Local, Duration};
+        use chrono::{Duration, Local};
         let today = today();
         let now = Local::now();
         let today_iso = now.to_rfc3339();
@@ -861,7 +979,7 @@ mod tests {
 
     #[test]
     fn transcript_latest_is_max() {
-        use chrono::{Local, Duration};
+        use chrono::{Duration, Local};
         let today = today();
         let now = Local::now();
         let iso_old = (now - Duration::days(2)).to_rfc3339();
@@ -872,7 +990,10 @@ mod tests {
             serde_json::json!({"source":"MODEL","created_at": iso_new}).to_string()
         );
         let (_count, latest) = count_requests_in_text(&text, today);
-        let expected = chrono::DateTime::parse_from_rfc3339(&iso_new).unwrap().timestamp_millis().max(0) as u64;
+        let expected = chrono::DateTime::parse_from_rfc3339(&iso_new)
+            .unwrap()
+            .timestamp_millis()
+            .max(0) as u64;
         assert_eq!(latest, Some(expected));
     }
 

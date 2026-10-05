@@ -59,3 +59,21 @@ body {
 .ring-glow-critical {
   animation: glowPulse 2.5s ease-in-out infinite;
 }
+
+/* ---- Keyboard Focus and Interactive Accessibility ---- */
+.provider-cell:focus-visible,
+.idle-action:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ---- Reduced Motion Preferences ---- */
+@media (prefers-reduced-motion: reduce) {
+  .provider-cell,
+  .ring-arc,
+  .ring-glow-critical {
+    animation: none !important;
+    transition: none !important;
+  }
+}

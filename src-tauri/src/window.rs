@@ -15,18 +15,33 @@ pub fn get_work_area(app: AppHandle) -> Result<WorkArea, String> {
     let window = app
         .get_webview_window("notch")
         .ok_or_else(|| "notch window not found".to_string())?;
+
+    // Attempt to query current monitor; if unavailable, fallback to primary or safe standard bounds
     let monitor = window
         .current_monitor()
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "no monitor for notch window".to_string())?;
-    let area = monitor.work_area();
-    Ok(WorkArea {
-        x: area.position.x,
-        y: area.position.y,
-        width: area.size.width,
-        height: area.size.height,
-        scale_factor: monitor.scale_factor(),
-    })
+        .ok()
+        .flatten()
+        .or_else(|| app.primary_monitor().ok().flatten());
+
+    if let Some(m) = monitor {
+        let area = m.work_area();
+        Ok(WorkArea {
+            x: area.position.x,
+            y: area.position.y,
+            width: area.size.width,
+            height: area.size.height,
+            scale_factor: m.scale_factor(),
+        })
+    } else {
+        // Safe standard fallback (1920x1080 display at 100% DPI, 40px taskbar reservation)
+        Ok(WorkArea {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1040,
+            scale_factor: 1.0,
+        })
+    }
 }
 
 /// Apply Win32 extended styles to the notch window at launch:
@@ -36,7 +51,7 @@ pub fn get_work_area(app: AppHandle) -> Result<WorkArea, String> {
 ///   transparent margin passes through. Previously `TRANSPARENT|LAYERED` made
 ///   the whole window click-through.
 ///
- /// Called from the Tauri `setup` hook in `lib.rs` and again after the window
+/// Called from the Tauri `setup` hook in `lib.rs` and again after the window
 /// is shown (Tauri may reset exstyle on `show()`).
 #[cfg(windows)]
 pub fn apply_notch_styles(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -51,8 +66,8 @@ fn apply_notch_styles_inner(
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SET_WINDOW_POS_FLAGS,
-        SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED,
-        WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+        SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
+        WS_EX_TRANSPARENT,
     };
 
     let window = window.ok_or("notch window not found during setup")?;
@@ -77,7 +92,9 @@ fn apply_notch_styles_inner(
                 0,
                 0,
                 0,
-                SET_WINDOW_POS_FLAGS(SWP_NOMOVE.0 | SWP_NOSIZE.0 | SWP_NOZORDER.0 | SWP_FRAMECHANGED.0),
+                SET_WINDOW_POS_FLAGS(
+                    SWP_NOMOVE.0 | SWP_NOSIZE.0 | SWP_NOZORDER.0 | SWP_FRAMECHANGED.0,
+                ),
             );
         }
     }
@@ -281,8 +298,14 @@ mod tests {
         let last = pts.last().unwrap();
         assert!((last.0 - 7.7).abs() < 1e-9);
         assert!((last.1 - 38.5).abs() < 1e-9);
-        let has_apex = pts.iter().any(|(x, y)| (*x - 3.85).abs() < 0.5 && (*y - 150.0).abs() < 1.0);
-        assert!(has_apex, "bezier samples should include near-apex (3.85,150), got {:?}", pts);
+        let has_apex = pts
+            .iter()
+            .any(|(x, y)| (*x - 3.85).abs() < 0.5 && (*y - 150.0).abs() < 1.0);
+        assert!(
+            has_apex,
+            "bezier samples should include near-apex (3.85,150), got {:?}",
+            pts
+        );
         assert_eq!(pts.len(), 35);
     }
 
@@ -314,7 +337,7 @@ mod tests {
         let phys = notch_polygon_physical(70.0, 300.0, 1.5);
         assert_eq!(phys[0], (105, 0)); // 70*1.5=105
         assert_eq!(phys[1], (105, 450)); // 300*1.5=450
-        // innerBottom (7.7, 261.5) * 1.5 = (11.55->12, 392.25->392)
+                                         // innerBottom (7.7, 261.5) * 1.5 = (11.55->12, 392.25->392)
         assert_eq!(phys[2], (12, 392));
         let last = phys.last().unwrap();
         assert_eq!(*last, (12, 58)); // 38.5 * 1.5 = 57.75 -> 58
