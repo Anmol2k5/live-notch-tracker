@@ -15,7 +15,6 @@ mod window;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
 
 pub struct AppState {
     pub usage: Mutex<usage::UsageSnapshot>,
