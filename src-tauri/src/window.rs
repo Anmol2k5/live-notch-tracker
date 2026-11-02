@@ -51,13 +51,7 @@ pub fn get_work_area(app: AppHandle) -> Result<WorkArea, String> {
 ///   transparent margin passes through. Previously `TRANSPARENT|LAYERED` made
 ///   the whole window click-through.
 ///
-/// Called from the Tauri `setup` hook in `lib.rs` and again after the window
-/// is shown (Tauri may reset exstyle on `show()`).
-#[cfg(windows)]
-pub fn apply_notch_styles(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    apply_notch_styles_inner(app.get_webview_window("notch"))
-}
-
+/// Called when entering compact mode; Desk startup keeps a regular window.
 #[cfg(windows)]
 fn apply_notch_styles_inner(
     window: Option<tauri::WebviewWindow>,
@@ -108,11 +102,6 @@ pub fn apply_notch_styles_cmd(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-pub fn apply_notch_styles(_app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    Ok(())
-}
-
-#[cfg(not(windows))]
 #[tauri::command]
 pub fn apply_notch_styles_cmd(_app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
@@ -121,6 +110,58 @@ pub fn apply_notch_styles_cmd(_app: tauri::AppHandle) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 // M6a: Win32 region from notchPath — makes the window itself the silhouette
 // ---------------------------------------------------------------------------
+
+/// Restore a regular window before expanding from the shaped screen-edge notch.
+#[tauri::command]
+pub fn show_desk(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("notch")
+        .ok_or("Codenotch window not found.")?;
+    #[cfg(windows)]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::Graphics::Gdi::SetWindowRgn;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
+        };
+        if let RawWindowHandle::Win32(handle) =
+            window.window_handle().map_err(|e| e.to_string())?.as_raw()
+        {
+            let hwnd = HWND(handle.hwnd.get() as *mut _);
+            unsafe {
+                if SetWindowRgn(hwnd, None, true) == 0 {
+                    return Err("Could not clear the compact window shape.".into());
+                }
+                let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style & !(WS_EX_TOOLWINDOW.0 as isize));
+            }
+        }
+    }
+    if let Some(monitor) = window
+        .current_monitor()
+        .map_err(|e| e.to_string())?
+        .or(app.primary_monitor().map_err(|e| e.to_string())?)
+    {
+        let sf = monitor.scale_factor();
+        let area = monitor.work_area();
+        let (x, y, width, height) = crate::desk_geometry::desk_bounds(
+            area.position.x as f64 / sf,
+            area.position.y as f64 / sf,
+            area.size.width as f64 / sf,
+            area.size.height as f64 / sf,
+        );
+        window
+            .set_size(tauri::LogicalSize::new(width, height))
+            .map_err(|e| e.to_string())?;
+        window
+            .set_position(tauri::LogicalPosition::new(x, y))
+            .map_err(|e| e.to_string())?;
+    }
+    window.show().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}
 
 /// Returns the notch silhouette polygon in logical pixels, matching
 /// `src/components/SideNotchShape.tsx`'s `notchPath(width,height)` exactly.

@@ -15,11 +15,13 @@ export function NotchRootView({
   width,
   height,
   onRefreshAll,
+  onOpenDesk,
 }: {
   cells: UIProviderCell[];
   width: number;
   height: number;
   onRefreshAll?: () => void;
+  onOpenDesk?: () => void;
 }) {
   return (
     <div style={{ position: 'relative', width, height }}>
@@ -34,6 +36,8 @@ export function NotchRootView({
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'space-evenly',
+          paddingBottom: onOpenDesk ? 74 : 0,
+          boxSizing: 'border-box',
         }}
       >
         {cells.length === 0 ? (
@@ -103,6 +107,7 @@ export function NotchRootView({
           ))
         )}
       </div>
+      {onOpenDesk && <button className="open-desk-button" onClick={onOpenDesk} aria-label="Open Desk">Desk ↗</button>}
     </div>
   );
 }

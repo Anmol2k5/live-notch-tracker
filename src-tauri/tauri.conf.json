@@ -15,17 +15,17 @@
         "label": "notch",
         "title": "Codenotch",
         "url": "index.html",
-        "width": 70,
-        "height": 301,
-        "center": false,
+        "width": 940,
+        "height": 730,
+        "center": true,
         "resizable": false,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "focus": false,
+        "skipTaskbar": false,
+        "focus": true,
         "visible": false,
-        "shadow": false
+        "shadow": true
       }
     ],
     "security": {
