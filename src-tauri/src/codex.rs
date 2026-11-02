@@ -1,16 +1,18 @@
 //! Codex usage adapter, implemented from the upstream Codenotch's documented behaviour.
 //!
-//! Two data paths (the same trade-off upstream made in 1.5.0):
+//! HTTP first, native Codex quota recovery second, recorded rollout last.
+//! Recovery/discovery adapted from vinzdg/codenotch at 6522e9f3ee0fe35d46e428b441e6e80b586eacbb;
+//! MIT notices: third-party/codenotch.
 //!   1. Live: borrow the session Codex keeps in `~/.codex/auth.json` (`tokens.access_token` +
 //!      `tokens.account_id`) and GET `https://chatgpt.com/backend-api/wham/usage`. The reply carries
 //!      `rate_limit.{primary_window,secondary_window}` with `used_percent / limit_window_seconds /
 //!      reset_at (seconds) | reset_after_seconds`, plus a top-level `plan_type`. That is the number
 //!      for *now*, and it starts no process. The token is read only — never refreshed, never written
 //!      back; 401/403 becomes needsAuth and Codex renews it on its own.
-//!      (The earlier `codex app-server` JSON-RPC route spawned a node process tree every five
-//!      minutes, needed taskkill to clean up, and only ever reported the weekly window; the
-//!      five-hour window came back with the endpoint.)
-//!   2. Fallback: Codex writes the limits it saw on each turn into the thread's rollout log
+//!   2. Native recovery: ask a directly launched codex.exe app-server for account/rateLimits/read.
+//!      Bounded to 20 seconds, terminated/reaped afterwards, no login or inference commands.
+//!      HTTP Retry-After remains authoritative; failed native reads stand down for 30 minutes.
+//!   3. Fallback: Codex writes the limits it saw on each turn into the thread's rollout log
 //!      `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, as lines like
 //!      `{"timestamp":"…","type":"event_msg","payload":{"type":"token_count","rate_limits":{
 //!         "primary":{"used_percent":0.0,"window_minutes":300,"resets_at":1790585719},
@@ -42,6 +44,8 @@ const BACKOFF_MIN_SECS: u64 = 60; // wait at least this long after a 429; Retry-
 static REFRESH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Retry deadline given by the server (ms epoch): neither a manual refresh nor a restart may bypass it
 static BACKOFF_UNTIL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+// Upstream's failed native recovery stands down for 30 minutes rather than spawning on every poll.
+static NATIVE_RETRY_AFTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub fn request_refresh() {
     REFRESH.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -71,7 +75,7 @@ fn persist(s: &UsageSnapshot) {
 // ---------------- Locating the executable ----------------
 
 /// Candidates in order: the native exe inside the global npm package (cleanest — no cmd/node
-/// wrapper) → ~/.codex/bin → codex.exe / codex.cmd on PATH.
+/// wrapper) → ~/.codex/bin → native codex.exe on PATH. No shell wrappers are launched.
 pub fn find_executable() -> Option<PathBuf> {
     let mut cands: Vec<PathBuf> = Vec::new();
     if let Some(appdata) = dirs::config_dir() {
@@ -109,7 +113,32 @@ pub fn find_executable() -> Option<PathBuf> {
             cands.push(dir.join("codex.cmd"));
         }
     }
-    cands.into_iter().find(|p| p.is_file())
+    cands
+        .into_iter()
+        .find(|p| p.is_file() && crate::codex_rpc::is_native_executable(p))
+}
+
+/// Adapted from upstream native_codex: prefer the installed desktop's managed sign-in.
+fn native_codex() -> Option<PathBuf> {
+    if let Some(local) = dirs::data_local_dir() {
+        let root = local.join("OpenAI/Codex/bin");
+        let direct = root.join("codex.exe");
+        if direct.is_file() {
+            return Some(direct);
+        }
+        let mut bins = list_dirs(&root);
+        bins.sort_by_key(|p| {
+            std::cmp::Reverse(std::fs::metadata(p).and_then(|m| m.modified()).ok())
+        });
+        if let Some(exe) = bins
+            .into_iter()
+            .map(|p| p.join("codex.exe"))
+            .find(|p| p.is_file())
+        {
+            return Some(exe);
+        }
+    }
+    find_executable()
 }
 
 // ---------------- Live: the usage endpoint ----------------
@@ -397,7 +426,7 @@ pub fn snapshot_from_rollout(
 
 /// Is Codex present on this machine (CLI installed, signed in, or has had sessions)? If not, no cell is shown
 pub fn present() -> bool {
-    find_executable().is_some()
+    native_codex().is_some()
         || auth_path().map(|p| p.is_file()).unwrap_or(false)
         || codex_home()
             .map(|h| h.join("sessions").is_dir())
@@ -470,7 +499,37 @@ fn read_once() -> UsageSnapshot {
             },
         }
     }
-    // Fallback: rollout
+    // Adapted from upstream: HTTP first; native quota recovery must never bypass Retry-After.
+    if crate::codex_rpc::may_query_native(
+        now_ms(),
+        snap.backoff_until,
+        NATIVE_RETRY_AFTER.load(std::sync::atomic::Ordering::Relaxed),
+    ) {
+        if let Some(executable) = native_codex() {
+            if let Some(windows) = crate::codex_rpc::query(&executable) {
+                snap.status = "ok".into();
+                snap.windows = windows
+                    .into_iter()
+                    .map(|w| {
+                        LimitWindow::percentage(
+                            w.id,
+                            label_for(w.minutes, w.id),
+                            w.used,
+                            w.resets_at,
+                        )
+                    })
+                    .collect();
+                snap.fetched_at = now_ms();
+                snap.note = "via Codex app-server".into();
+                return snap;
+            }
+            NATIVE_RETRY_AFTER.store(
+                now_ms().saturating_add(30 * 60 * 1000),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+    }
+    // Final fallback: rollout
     match newest_rollout()
         .and_then(|p| tail_text(&p))
         .and_then(|t| snapshot_from_rollout(&t))

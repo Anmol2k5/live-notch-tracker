@@ -2,17 +2,23 @@ html, body, #root {
   margin: 0;
   padding: 0;
   background: transparent;
-  overflow: hidden;
+  min-height: 100%;
 }
 
 body {
   font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
   color: #ffffff;
-  user-select: none;
   cursor: default;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
+body { margin: 0; }
+body[data-mode="desk"] { overflow: auto; background: #0a0e0b; }
+body[data-mode="compact"] { overflow: hidden; background: transparent; }
+body:has(.browser-desk) { padding: 36px 24px; }
+body:has(.native-desk) { background: transparent; }
+@media (max-width: 700px) { body:has(.browser-desk) { padding: 12px; } }
 
 /* ---- Cell entrance animation ---- */
 @keyframes cellFadeSlideIn {

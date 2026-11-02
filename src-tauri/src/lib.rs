@@ -1,13 +1,20 @@
 pub mod antigravity;
+mod autostart;
 pub mod codex;
+mod codex_rpc;
 pub mod cursor;
+mod desk_geometry;
+mod desktop;
+mod github_calendar;
+mod launcher;
 pub mod storage;
+#[cfg(windows)]
+mod tray;
 pub mod usage;
 mod window;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
 
 pub struct AppState {
     pub usage: Mutex<usage::UsageSnapshot>,
@@ -89,23 +96,45 @@ fn get_antigravity(state: tauri::State<AppState>) -> usage::UsageSnapshot {
 }
 
 #[tauri::command]
-fn refresh_usage(app: AppHandle) {
-    {
-        let st = app.state::<AppState>();
-        let mut u = st.usage.lock().unwrap_or_else(|e| e.into_inner());
-        u.backoff_until = 0;
-    }
+fn refresh_usage() {
+    // Wake pollers without mutating their persisted Retry-After deadlines.
     usage::request_refresh();
     codex::request_refresh();
     cursor::request_refresh();
     antigravity::request_refresh();
 }
 
+#[tauri::command]
+fn get_startup_enabled() -> Result<bool, String> {
+    autostart::is_enabled()
+}
+
+#[tauri::command]
+async fn set_startup_enabled(enabled: bool) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if enabled {
+            autostart::enable()?;
+        } else {
+            autostart::disable()?;
+        }
+        autostart::is_enabled()
+    })
+    .await
+    .map_err(|_| "Windows startup settings were interrupted.".to_string())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = std::fs::create_dir_all(data_dir());
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(windows)]
+    let builder = builder
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tray::request_desk(app)
+        }))
+        .on_window_event(tray::close_to_tray);
+    builder
         .manage(AppState {
             usage: Mutex::new(usage::load_persisted()),
             codex: Mutex::new(codex::load_persisted()),
@@ -116,6 +145,11 @@ pub fn run() {
             window::get_work_area,
             window::apply_notch_styles_cmd,
             window::apply_notch_region_cmd,
+            window::show_desk,
+            desktop::get_github_calendar,
+            desktop::launch_app,
+            get_startup_enabled,
+            set_startup_enabled,
             get_usage,
             get_cursor,
             get_codex,
@@ -123,20 +157,11 @@ pub fn run() {
             refresh_usage
         ])
         .setup(|app| {
-            window::apply_notch_styles(app)?;
-            // Tauri may reset exstyle on show(); re-apply shortly after the
-            // frontend's `win.show()` (the frontend also invokes
-            // `apply_notch_styles_cmd` after `show()`, this is a safety net
-            // for the production build where the console is not visible).
             #[cfg(windows)]
-            {
-                let h = app.handle().clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(600));
-                    let _ = window::apply_notch_styles_cmd(h.clone());
-                    std::thread::sleep(std::time::Duration::from_millis(900));
-                    let _ = window::apply_notch_styles_cmd(h);
-                });
+            tray::install(app)?;
+            let background = cfg!(windows) && std::env::args().any(|arg| arg == "--background");
+            if !background {
+                window::show_desk(app.handle().clone()).map_err(std::io::Error::other)?;
             }
 
             let handle = app.handle().clone();
