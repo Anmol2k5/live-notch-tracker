@@ -50,7 +50,25 @@ jobs:
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
 
       - name: Rust Clippy linter
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+        shell: pwsh
+        run: |
+          cargo clippy --locked --manifest-path src-tauri/Cargo.toml -- -D warnings 2>&1 | Tee-Object -FilePath clippy.log
+          $clippyExit = $LASTEXITCODE
+          if ($clippyExit -ne 0) {
+            '### Rust Clippy diagnostics' | Add-Content $env:GITHUB_STEP_SUMMARY
+            '```text' | Add-Content $env:GITHUB_STEP_SUMMARY
+            Get-Content clippy.log -Tail 160 | Add-Content $env:GITHUB_STEP_SUMMARY
+            '```' | Add-Content $env:GITHUB_STEP_SUMMARY
+            $lines = @(Get-Content clippy.log)
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+              if ($lines[$i] -match '^error(?:\[|:)') {
+                $last = [Math]::Min($i + 18, $lines.Count - 1)
+                $message = ($lines[$i..$last] -join "`n").Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+                Write-Output "::error::$message"
+              }
+            }
+          }
+          exit $clippyExit
 
       - name: Rust unit tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
